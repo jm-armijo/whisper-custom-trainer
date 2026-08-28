@@ -31,27 +31,34 @@ class TestLoadAudio:
 
 
 class TestClipLengthWarnings:
-    """Bad takes poison training, so the recorder must flag them."""
+    """Bad takes poison training, so the recorder must flag them.
+
+    Under curses there is no stdout to print to; the warning reaches the user
+    as the status-bar message returned when the clip is saved.
+    """
 
     def build_clip(self, seconds):
         import numpy as np
 
         return np.zeros(int(wp.SAMPLE_RATE * seconds), dtype="float32")
 
-    def test_warns_when_clip_is_too_short(self, capsys):
-        from record_data import warn_if_unusual_length
+    def test_warns_when_clip_exceeds_the_whisper_window(self):
+        from record_data import saved_message
 
-        warn_if_unusual_length(self.build_clip(0.1))
-        assert "WARNING" in capsys.readouterr().out
+        assert "exceeds" in saved_message(self.build_clip(31.0))
 
-    def test_warns_when_clip_exceeds_the_whisper_window(self, capsys):
-        from record_data import warn_if_unusual_length
+    def test_stays_quiet_for_a_normal_clip(self):
+        from record_data import saved_message
 
-        warn_if_unusual_length(self.build_clip(31.0))
-        assert "WARNING" in capsys.readouterr().out
+        assert "exceeds" not in saved_message(self.build_clip(4.0))
 
-    def test_stays_silent_for_a_normal_clip(self, capsys):
-        from record_data import warn_if_unusual_length
+    def test_reports_the_duration_that_was_saved(self):
+        from record_data import saved_message
 
-        warn_if_unusual_length(self.build_clip(4.0))
-        assert capsys.readouterr().out == ""
+        assert "4.0s" in saved_message(self.build_clip(4.0))
+
+    def test_a_clip_too_short_is_rejected_before_saving(self):
+        """The short-clip case is a rejection, not a warning."""
+        from record_data import is_unusable
+
+        assert is_unusable(self.build_clip(0.1))
