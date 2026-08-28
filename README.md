@@ -67,9 +67,36 @@ types the text into whatever application is focused, including those two.
 Roughly **30-60 minutes of speech per language** for a noticeable accuracy gain.
 A handful of clips only proves the pipeline runs.
 
-Recording is resumable: rerun the same `record_data.py` command and it continues
-where you stopped. Press `r` to redo a misread take (a bad clip hurts training),
-`s` to skip, `q` to stop.
+Recording runs in a full-screen view showing the whole script: lines already
+recorded are green, the selected line yellow, and the rest light grey. Move with
+the arrow keys to any line — including one already recorded, to re-read it — and
+press space to record. A blinking red dot and a timer show while the mic is live.
+
+Resuming needs no bookkeeping: the cursor opens on the first line without a clip,
+so rerunning the same command continues where you stopped. Deleting a `.wav`
+re-opens that line.
+
+| Key | Action |
+|---|---|
+| `↑` `↓` | move between lines |
+| `space` | start / stop recording (confirms before overwriting a take) |
+| `p` | play the selected line back |
+| `s` | skip to the next line |
+| `q` | quit |
+
+Colours and the blink interval live in `recorder_theme.json`:
+
+```json
+{
+  "blink_ms": 1000,
+  "recorded": {"fg": "green",  "bold": false},
+  "selected": {"fg": "yellow", "bold": true},
+  "pending":  {"fg": "white",  "bold": false}
+}
+```
+
+Any of the eight terminal colour names, `"default"`, or `"color:N"` for a
+256-colour index. `--theme other.json` selects a different file.
 
 ## Tests
 
@@ -106,7 +133,10 @@ padding mask, the LoRA targets, or the tokenizer restore each fails a test.
 | File | Role |
 |---|---|
 | `whisper_pipeline.py` | Shared constants and third-party workarounds |
-| `record_data.py` | Interactive recorder, resumable |
+| `record_data.py` | Recorder controller: keys, microphone, dataset rows |
+| `recorder_ui.py` | Full-screen curses view (no audio or file knowledge) |
+| `recorder_state.py` | Which chunks are recorded, and where the cursor sits |
+| `recorder_theme.py` | Loads and validates `recorder_theme.json` |
 | `train.py` | Bilingual LoRA training |
 | `merge.py` | Folds adapter into the portable master model |
 | `export.py` | Master model to CT2 / ggml |

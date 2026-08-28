@@ -50,6 +50,31 @@ dataset.csv ──train.py──> custom-lora-adapter ──merge.py──> merg
                                                                    └──> exports/*.bin (whisper.cpp, OpenWhispr)
 ```
 
+### Recorder UI boundary
+
+The recorder is split so the screen can change without touching the dataset
+logic, mirroring how `whisper_pipeline.py` isolates third-party quirks:
+
+- `recorder_ui.py` — curses only. Draws a view dict and maps keys to actions;
+  knows nothing of audio, CSV or paths. Wrapping/scrolling are pure functions.
+- `recorder_state.py` — pure chunk bookkeeping. A chunk counts as recorded only
+  when its CSV row **and** its `.wav` both exist, so deleting a clip re-opens
+  that line and no sidecar state file is needed.
+- `recorder_theme.py` + `recorder_theme.json` — colours and `blink_ms`, merged
+  over defaults and validated at startup.
+- `record_data.py` — the controller joining those to the microphone.
+
+Two constraints worth keeping: the record dot blinks by **redrawing on a timer**
+(`curses.A_BLINK` is ignored by most modern terminals), which is why the input
+loop is non-blocking; and `read_key` decodes **raw `ESC [ A` sequences** as well
+as `KEY_*` constants, because `keypad()` does not always fold them — arrows
+silently stopped working without this.
+
+Rendering is tested through a stub screen, never a real `initscr()`: pytest
+replaces `sys.stdout` while curses drives the terminal fd, which corrupts the
+run. The stub proves the UI calls curses as intended, not that curses paints
+correctly — verify real rendering by running the recorder.
+
 `whisper_pipeline.py` is the boundary layer: constants, paths, and every third-party
 workaround live there so a library upgrade is a one-function edit. Prefer extending it
 over scattering fixes across scripts.
