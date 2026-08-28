@@ -1,4 +1,4 @@
-# my-whisper
+# whisper-custom-trainer
 
 Fine-tunes `openai/whisper-small` on your own Latin American accent in **English
 and Spanish** using a single LoRA adapter, then exports it to formats other
