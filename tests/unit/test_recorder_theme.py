@@ -56,6 +56,30 @@ class TestLoadTheme:
         assert theme.style("selected").fg == "yellow"
 
 
+class TestRecordedSelectedStyle:
+    """A recorded line under the cursor gets its own themeable style rather
+    than borrowing one of the other two, so it stays user-configurable."""
+
+    def test_it_is_a_default_style(self, tmp_path):
+        assert "recorded_selected" in rt.load_theme(tmp_path / "none.json").names()
+
+    def test_it_is_green_like_a_finished_line(self, tmp_path):
+        theme = rt.load_theme(tmp_path / "none.json")
+        assert theme.style("recorded_selected").fg == "green"
+
+    def test_it_is_bold_so_the_cursor_stays_visible(self, tmp_path):
+        theme = rt.load_theme(tmp_path / "none.json")
+        assert theme.style("recorded_selected").bold
+
+    def test_it_differs_from_a_plain_recorded_line(self, tmp_path):
+        theme = rt.load_theme(tmp_path / "none.json")
+        assert theme.style("recorded_selected") != theme.style("recorded")
+
+    def test_the_user_can_override_it(self, theme_file):
+        theme = rt.load_theme(theme_file({"recorded_selected": {"fg": "cyan"}}))
+        assert theme.style("recorded_selected").fg == "cyan"
+
+
 class TestBlinkInterval:
     def test_defaults_to_one_second(self, tmp_path):
         assert rt.load_theme(tmp_path / "absent.json").blink_ms == 1000

@@ -20,6 +20,9 @@ HOLLOW_DOT = "○"
 DEFAULTS = {
     "recorded": {"fg": "green", "bold": False},
     "selected": {"fg": "yellow", "bold": True},
+    # Green says 'done'; the bold weight (and the cursor mark) is what shows
+    # the line is also selected, so it still reads right without colour.
+    "recorded_selected": {"fg": "green", "bold": True},
     "pending": {"fg": "white", "bold": False},
     "status_idle": {"fg": "black", "bg": "white", "bold": False},
     "status_recording": {"fg": "black", "bg": "red", "bold": True},

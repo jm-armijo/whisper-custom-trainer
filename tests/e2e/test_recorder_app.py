@@ -150,6 +150,52 @@ class TestBlinkingIndicator:
         assert lazy.screen.count("○") < quick.screen.count("○")
 
 
+class TestFinishedLineStaysSelected:
+    """A saved line must stop reading as 'read this next' while still selected.
+
+    The cursor does not move after a take, so the only cue available is the
+    line's own styling; this is the tier that can see what colour it actually
+    became.
+    """
+
+    def test_the_line_is_restyled_once_the_take_is_saved(self, recorder):
+        app = recorder(TWO_LINES)
+        before = app.styles_before("rapido zorro")[-1]
+
+        app.press(SPACE, settle=1.5)
+        app.press(SPACE, settle=1.5)
+
+        assert app.styles_before("rapido zorro")[-1] != before
+
+    def test_the_cursor_has_not_moved_off_the_line(self, recorder):
+        """Proving the restyle is not just the cursor leaving."""
+        app = recorder(TWO_LINES)
+        app.press(SPACE, settle=1.5)
+        app.press(SPACE, settle=1.5)
+
+        for row in app.screen.splitlines():
+            if "rapido zorro" in row:
+                assert "▸" in row
+                return
+        raise AssertionError("the recorded line was never drawn")
+
+    def test_the_line_is_marked_done(self, recorder):
+        app = recorder(TWO_LINES)
+        app.press(SPACE, settle=1.5)
+        app.press(SPACE, settle=1.5)
+
+        assert "✓" in app.screen
+
+    def test_it_is_not_styled_like_the_unrecorded_line_below(self, recorder):
+        app = recorder(TWO_LINES)
+        app.press(SPACE, settle=1.5)
+        app.press(SPACE, settle=1.5)
+
+        assert app.styles_before("rapido zorro")[-1] != (
+            app.styles_before("programacion en Python")[-1]
+        )
+
+
 class TestQuitting:
     def test_q_from_idle_exits(self, recorder):
         app = recorder(TWO_LINES)

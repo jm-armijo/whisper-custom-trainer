@@ -99,6 +99,30 @@ def render(screen, theme):
     return run
 
 
+@pytest.fixture
+def render_in_colour(screen, theme):
+    """Draw with colour pairs live.
+
+    The plain `render` fixture disables colour, which collapses every style
+    onto its bold flag alone - two differently-coloured statuses then compare
+    equal, and a colour regression would pass unnoticed.
+    """
+    def run(view_dict, monkeypatch):
+        pairs = {}
+        monkeypatch.setattr(curses, "has_colors", lambda: True)
+        monkeypatch.setattr(curses, "start_color", lambda: None)
+        monkeypatch.setattr(curses, "use_default_colors", lambda: None)
+        monkeypatch.setattr(curses, "curs_set", lambda _: None)
+        monkeypatch.setattr(
+            curses, "init_pair", lambda index, fg, bg: pairs.__setitem__(index, (fg, bg))
+        )
+        monkeypatch.setattr(curses, "color_pair", lambda index: index << 8)
+        widget = ui.RecorderUI(screen, theme)
+        widget.draw(view_dict)
+        return widget
+    return run
+
+
 class TestLineColouring:
     def test_each_status_draws_with_a_distinct_attribute(
         self, screen, view, render, monkeypatch
@@ -110,6 +134,40 @@ class TestLineColouring:
             screen.attr_of("beta two"),
         }
         assert len(attributes) == 2
+
+    def test_a_recorded_selected_line_is_not_drawn_like_a_pending_one(
+        self, screen, view, render_in_colour, monkeypatch
+    ):
+        """Selecting a finished line left it yellow, reading as 'read this next'."""
+        render_in_colour(view(cursor=0, recorded={0}), monkeypatch)
+        assert screen.attr_of("alpha one") != screen.attr_of("beta two")
+
+    def test_a_recorded_selected_line_shares_the_recorded_colour(
+        self, screen, view, render_in_colour, theme, monkeypatch
+    ):
+        """Green is what says 'done'; only the weight marks the cursor.
+
+        Compared by resolved foreground rather than pair number: each style
+        gets its own pair even when two of them ask for the same colour.
+        """
+        widget = render_in_colour(view(cursor=0, recorded={0, 2}), monkeypatch)
+        assert (theme.style(rs.RECORDED_SELECTED).fg
+                == theme.style(rs.RECORDED).fg)
+        assert widget.attr(rs.RECORDED_SELECTED) != widget.attr(rs.RECORDED)
+
+    def test_a_recorded_selected_line_keeps_the_cursor_mark(
+        self, screen, view, render, monkeypatch
+    ):
+        render(view(cursor=0, recorded={0}), monkeypatch)
+        _, text = screen.row_of("alpha one")
+        assert ui.CURSOR_MARK in text
+
+    def test_a_recorded_selected_line_is_bold(
+        self, screen, view, render, monkeypatch
+    ):
+        """Bold is what marks the cursor when the colour has gone green."""
+        render(view(cursor=0, recorded={0}), monkeypatch)
+        assert screen.attr_of("alpha one") & curses.A_BOLD
 
     def test_selected_line_is_bold(self, screen, view, render, monkeypatch):
         render(view(), monkeypatch)

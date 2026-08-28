@@ -29,6 +29,9 @@ KEY_UP = b"\x1b[A"
 SPACE = b" "
 
 
+SGR = re.compile(r"\x1b\[([0-9;]*)m")
+
+
 def strip_ansi(text):
     return ANSI.sub("", text)
 
@@ -82,6 +85,16 @@ class RecorderProcess:
     @property
     def screen(self):
         return strip_ansi(self.output)
+
+    def styles_before(self, needle):
+        """Every SGR sequence issued since the last one, for each time `needle`
+        was drawn. Colour is the whole point of some assertions, so those cannot
+        use the ANSI-stripped screen."""
+        found = []
+        for chunk in self.output.split(needle)[:-1]:
+            codes = SGR.findall(chunk)
+            found.append(codes[-1] if codes else "")
+        return found
 
 
 @pytest.fixture

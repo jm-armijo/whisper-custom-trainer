@@ -1,13 +1,41 @@
 {
   "blink_ms": 1000,
-
-  "recorded": {"fg": "green",  "bold": false},
-  "selected": {"fg": "yellow", "bold": true},
-  "pending":  {"fg": "white",  "bold": false},
-
-  "status_idle":      {"fg": "black", "bg": "white", "bold": false},
-  "status_recording": {"fg": "black", "bg": "red",   "bold": true},
-  "record_dot":       {"fg": "red",   "bold": true},
-  "border":           {"fg": "blue",  "bold": false},
-  "message":          {"fg": "yellow","bold": false}
+  "recorded": {
+    "fg": "green",
+    "bold": false
+  },
+  "selected": {
+    "fg": "yellow",
+    "bold": true
+  },
+  "recorded_selected": {
+    "fg": "green",
+    "bold": true
+  },
+  "pending": {
+    "fg": "white",
+    "bold": false
+  },
+  "status_idle": {
+    "fg": "black",
+    "bg": "white",
+    "bold": false
+  },
+  "status_recording": {
+    "fg": "black",
+    "bg": "red",
+    "bold": true
+  },
+  "record_dot": {
+    "fg": "red",
+    "bold": true
+  },
+  "border": {
+    "fg": "blue",
+    "bold": false
+  },
+  "message": {
+    "fg": "yellow",
+    "bold": false
+  }
 }

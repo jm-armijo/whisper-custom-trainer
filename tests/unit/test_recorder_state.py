@@ -74,9 +74,20 @@ class TestChunkStatuses:
     def test_marks_cursor_selected_over_pending(self):
         assert rs.chunk_statuses(3, set(), 1) == [rs.PENDING, rs.SELECTED, rs.PENDING]
 
-    def test_cursor_on_a_recorded_line_still_reads_selected(self):
-        """The cursor must be visible even on work already done."""
-        assert rs.chunk_statuses(2, {0}, 0) == [rs.SELECTED, rs.PENDING]
+    def test_cursor_on_a_recorded_line_reads_as_both(self):
+        """A finished line must not look pending just because it is selected.
+
+        Collapsing this into SELECTED left a line yellow after its take was
+        saved, so the screen said 'read this next' about work already done.
+        """
+        assert rs.chunk_statuses(2, {0}, 0) == [rs.RECORDED_SELECTED, rs.PENDING]
+
+    def test_the_combined_status_is_distinct_from_both_halves(self):
+        combined = rs.chunk_statuses(1, {0}, 0)[0]
+        assert combined not in (rs.RECORDED, rs.SELECTED)
+
+    def test_an_unrecorded_cursor_is_unaffected(self):
+        assert rs.chunk_statuses(2, {1}, 0) == [rs.SELECTED, rs.RECORDED]
 
     def test_marks_recorded_lines(self):
         assert rs.chunk_statuses(3, {0, 2}, 1) == [

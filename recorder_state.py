@@ -14,6 +14,7 @@ import whisper_pipeline as wp
 
 RECORDED = "recorded"
 SELECTED = "selected"
+RECORDED_SELECTED = "recorded_selected"
 PENDING = "pending"
 
 
@@ -52,11 +53,19 @@ def first_unrecorded(total, recorded):
 
 
 def chunk_statuses(total, recorded, cursor):
-    """Per-line status. The cursor outranks 'recorded' so it stays visible."""
-    return [
-        SELECTED if index == cursor else RECORDED if index in recorded else PENDING
-        for index in range(total)
-    ]
+    """Per-line status.
+
+    A finished line under the cursor is its own status rather than plain
+    SELECTED: collapsing the two left a line yellow once its take was saved,
+    so the screen said 'read this next' about work already done.
+    """
+    return [_status(index in recorded, index == cursor) for index in range(total)]
+
+
+def _status(is_recorded, is_cursor):
+    if is_recorded:
+        return RECORDED_SELECTED if is_cursor else RECORDED
+    return SELECTED if is_cursor else PENDING
 
 
 def _key(audio_path):

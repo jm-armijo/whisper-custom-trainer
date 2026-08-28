@@ -68,7 +68,9 @@ Roughly **30-60 minutes of speech per language** for a noticeable accuracy gain.
 A handful of clips only proves the pipeline runs.
 
 Recording runs in a full-screen view showing the whole script: lines already
-recorded are green, the selected line yellow, and the rest light grey. Move with
+recorded are green, the selected line yellow, and the rest light grey. A line
+that is both — selected and already recorded — stays green but turns bold, so a
+take that has just been saved no longer reads as still waiting. Move with
 the arrow keys to any line — including one already recorded, to re-read it — and
 press space to record. A blinking red dot and a timer show while the mic is live.
 
@@ -91,6 +93,7 @@ Colours and the blink interval live in `recorder_theme.json`:
   "blink_ms": 1000,
   "recorded": {"fg": "green",  "bold": false},
   "selected": {"fg": "yellow", "bold": true},
+  "recorded_selected": {"fg": "green", "bold": true},
   "pending":  {"fg": "white",  "bold": false}
 }
 ```

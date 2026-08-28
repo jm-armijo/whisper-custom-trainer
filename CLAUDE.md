@@ -60,6 +60,10 @@ logic, mirroring how `whisper_pipeline.py` isolates third-party quirks:
 - `recorder_state.py` — pure chunk bookkeeping. A chunk counts as recorded only
   when its CSV row **and** its `.wav` both exist, so deleting a clip re-opens
   that line and no sidecar state file is needed.
+  `chunk_statuses` returns four statuses, not three: a recorded line under the
+  cursor is `recorded_selected`, because folding it into `selected` left a line
+  yellow after its take was saved — the screen said "read this next" about work
+  already done.
 - `recorder_theme.py` + `recorder_theme.json` — colours and `blink_ms`, merged
   over defaults and validated at startup.
 - `record_data.py` — the controller joining those to the microphone.
