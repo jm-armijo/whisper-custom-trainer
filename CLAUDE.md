@@ -50,6 +50,17 @@ dataset.csv ──train.py──> custom-lora-adapter ──merge.py──> merg
                                                                    └──> exports/*.bin (whisper.cpp, OpenWhispr)
 ```
 
+### Chunking
+
+`chunk_text` splits on three things, in order of preference: sentence ends, blank
+lines, and — only when a single sentence exceeds the maximum — the last natural
+pause (`,;:` or a dash) within range, falling back to a plain word cut. Two
+details are load-bearing: a **blank line ends a sentence** even without terminal
+punctuation (collapsing all whitespace merged a heading ending in `:` into the
+paragraph below, which was then cut mid-clause), and `_break_point` ignores a
+pause in the first `MIN_WORDS_BEFORE_BREAK` words so a cut cannot leave a stub
+line. Whatever changes, every word must survive: `chunk_text` is lossless.
+
 ### Recorder UI boundary
 
 The recorder is split so the screen can change without touching the dataset

@@ -30,6 +30,93 @@ class TestSplitSentences:
         assert wp.split_sentences("   \n  ") == []
 
 
+class TestParagraphBreaks:
+    """A blank line ends a sentence even without terminal punctuation.
+
+    Collapsing all whitespace ran two paragraphs together, so a heading ending
+    in ':' merged with the text below it and was then cut mid-clause.
+    """
+
+    def test_a_blank_line_separates_sentences(self):
+        assert wp.split_sentences("First part:\n\nSecond part.") == [
+            "First part:", "Second part."
+        ]
+
+    def test_a_single_newline_still_collapses(self):
+        """Only a blank line is a break; wrapped prose is one sentence."""
+        assert wp.split_sentences("one\ntwo three") == ["one two three"]
+
+    def test_several_blank_lines_are_one_break(self):
+        assert wp.split_sentences("A one.\n\n\n\nB two.") == ["A one.", "B two."]
+
+    def test_blank_lines_of_whitespace_still_break(self):
+        assert wp.split_sentences("A one:\n   \t \nB two.") == ["A one:", "B two."]
+
+    def test_the_reported_paragraph_is_not_merged(self):
+        text = (
+            "The following code shows how methods for the boolean and, or, and "
+            "xor operations could be expressed using pattern matching syntax:"
+            "\n\n"
+            "Pattern matching expressions can be simplified by using _ as a "
+            "catchall for any value."
+        )
+        chunks = wp.chunk_text(text)
+        assert chunks[0].endswith("syntax:")
+
+    def test_the_second_paragraph_stays_whole(self):
+        text = (
+            "The following code shows how methods for the boolean and, or, and "
+            "xor operations could be expressed using pattern matching syntax:"
+            "\n\n"
+            "Pattern matching expressions can be simplified by using _ as a "
+            "catchall for any value."
+        )
+        assert wp.chunk_text(text)[1].startswith("Pattern matching expressions")
+
+
+class TestNaturalBreakSplitting:
+    """An overlong sentence is cut at punctuation when one is in range."""
+
+    def test_splits_at_a_comma_rather_than_mid_clause(self):
+        text = (
+            "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu, "
+            "nu xi omicron pi rho sigma tau upsilon phi chi psi omega alef bet gimel."
+        )
+        assert wp.chunk_text(text)[0].endswith("mu,")
+
+    def test_prefers_a_semicolon_break(self):
+        text = (
+            "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu; "
+            "nu xi omicron pi rho sigma tau upsilon phi chi psi omega alef bet gimel."
+        )
+        assert wp.chunk_text(text)[0].endswith("mu;")
+
+    def test_falls_back_to_a_word_boundary_without_punctuation(self):
+        """No natural break in range: the plain cut is still correct."""
+        text = " ".join(f"word{i}" for i in range(40)) + "."
+        chunks = wp.chunk_text(text)
+        assert words_in(chunks[0]) == wp.MAX_WORDS_PER_CHUNK
+
+    def test_a_break_too_early_is_ignored(self):
+        """Cutting at a comma in the first few words would leave a stub line."""
+        text = "alpha, " + " ".join(f"word{i}" for i in range(40)) + "."
+        assert words_in(wp.chunk_text(text)[0]) > 5
+
+    def test_natural_splits_still_respect_the_maximum(self):
+        text = (
+            "alpha beta, gamma delta epsilon zeta eta theta iota kappa lambda mu, "
+            "nu xi omicron pi rho sigma tau upsilon phi chi psi omega alef bet."
+        )
+        assert all(words_in(c) <= wp.MAX_WORDS_PER_CHUNK for c in wp.chunk_text(text))
+
+    def test_every_word_survives_a_natural_split(self):
+        text = (
+            "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu, "
+            "nu xi omicron pi rho sigma tau upsilon phi chi psi omega alef bet gimel."
+        )
+        assert " ".join(wp.chunk_text(text)).split() == text.split()
+
+
 class TestChunkText:
     def test_groups_short_sentences_up_to_the_minimum(self):
         """Three-word sentences must be packed together, not recorded one by one."""

@@ -48,14 +48,28 @@ class PipelineError(RuntimeError):
     """Raised with an actionable message when a pipeline precondition fails."""
 
 
+# A break in range of the maximum is preferred over cutting mid-clause, but one
+# in the first few words would leave a stub line, so only the tail is searched.
+NATURAL_BREAKS = ",;:—–"
+MIN_WORDS_BEFORE_BREAK = 8
+
+
 def split_sentences(text):
-    """Split prose into sentences, honouring Spanish inverted punctuation."""
-    normalized = re.sub(r"\s+", " ", text).strip()
-    if not normalized:
-        return []
-    # Split after .!?… only when followed by whitespace, so decimals stay intact.
-    parts = re.split(r"(?<=[.!?…])\s+(?=[¿¡\"'(\[]?[^\s])", normalized)
-    return [part.strip() for part in parts if part.strip()]
+    """Split prose into sentences, honouring Spanish inverted punctuation.
+
+    A blank line ends a sentence even without terminal punctuation: collapsing
+    every whitespace run merged a heading ending in ':' into the paragraph
+    below it, which was then cut mid-clause to fit the maximum.
+    """
+    sentences = []
+    for paragraph in re.split(r"\n\s*\n", text):
+        normalized = re.sub(r"\s+", " ", paragraph).strip()
+        if not normalized:
+            continue
+        # Split after .!?… only when followed by whitespace, so decimals stay intact.
+        parts = re.split(r"(?<=[.!?…])\s+(?=[¿¡\"'(\[]?[^\s])", normalized)
+        sentences.extend(part.strip() for part in parts if part.strip())
+    return sentences
 
 
 def chunk_text(text):
@@ -91,11 +105,28 @@ def _flush(words):
 
 
 def _hard_split(words):
-    """Break an over-long sentence at word boundaries into readable pieces."""
-    return [
-        " ".join(words[start:start + MAX_WORDS_PER_CHUNK])
-        for start in range(0, len(words), MAX_WORDS_PER_CHUNK)
-    ]
+    """Break an over-long sentence, preferring a natural pause to a blind cut.
+
+    Reading aloud from a line that ends mid-clause is awkward, so a comma or
+    similar within the allowed span wins over the maximum-length boundary.
+    """
+    pieces = []
+    remaining = list(words)
+    while len(remaining) > MAX_WORDS_PER_CHUNK:
+        cut = _break_point(remaining)
+        pieces.append(" ".join(remaining[:cut]))
+        remaining = remaining[cut:]
+    if remaining:
+        pieces.append(" ".join(remaining))
+    return pieces
+
+
+def _break_point(words):
+    """Index to cut at: the last natural pause in range, else the maximum."""
+    for index in range(MAX_WORDS_PER_CHUNK, MIN_WORDS_BEFORE_BREAK - 1, -1):
+        if words[index - 1].endswith(tuple(NATURAL_BREAKS)):
+            return index
+    return MAX_WORDS_PER_CHUNK
 
 
 def count_recorded_chunks(csv_path, language):

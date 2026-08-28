@@ -21,7 +21,10 @@ python merge.py                                     # portable master model
 ```
 
 Supply your own `script_*.txt`: any prose you are comfortable reading. It is
-split automatically into 10-25 word chunks.
+split automatically into 10-25 word chunks at sentence ends, blank lines, and —
+for a sentence too long to fit — the last comma or similar pause in range, so a
+line rarely ends mid-clause. Leave a blank line between paragraphs and they will
+not be run together.
 
 ## Using the model
 
