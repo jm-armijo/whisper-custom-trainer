@@ -1,0 +1,18 @@
+# Environments and vendored clones (regenerable via setup.sh)
+venv/
+whisper/
+whisper.cpp/
+
+# Recorded audio is large and personal
+data/
+dataset.csv
+
+# Model artifacts are regenerable from dataset.csv
+custom-lora-adapter/
+merged-whisper-model/
+exports/
+scripts/
+
+__pycache__/
+*.pyc
+.pytest_cache/

@@ -1,0 +1,105 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project
+
+Fine-tunes `openai/whisper-small` on the user's Latin American accent in **English and
+Spanish** using one bilingual LoRA adapter, then exports it to formats other applications
+can load. Runs locally on Apple Silicon (MPS).
+
+## Commands
+
+```bash
+./setup.sh                                    # venv + deps + vendored repos (idempotent)
+source venv/bin/activate
+
+python record_data.py --text scripts/es.txt --lang es   # record; resumable
+python train.py                               # LoRA adapter -> ./custom-lora-adapter
+python merge.py                               # portable master -> ./merged-whisper-model
+python export.py --format all                 # ct2 | ggml | all -> ./exports
+./convert.sh                                  # export everything + install into OpenWhispr
+```
+
+### Tests
+
+```bash
+python -m pytest                              # unit only (~1s) - the default tier
+python -m pytest -m integration               # real libs/converters (~30s)
+python -m pytest -m e2e                       # full pipeline to speech (~20s)
+python -m pytest -m "unit or integration or e2e"        # all 132
+
+python -m pytest tests/unit/test_chunking.py -q         # single file
+python -m pytest -k test_masks_padding -m "unit or integration"   # single test
+```
+
+`pytest.ini` sets `addopts = -m "not integration and not e2e"`, so a bare `pytest` runs
+only the fast tier. Tier markers are applied by path in `tests/conftest.py` — a test is
+tagged by which of `tests/{unit,integration,e2e}/` it lives in, not by a decorator.
+
+## Architecture
+
+**The merged model is the product.** `./merged-whisper-model` is the durable artifact;
+every distribution format is a cheap re-export from it. Adding a new target means adding
+one function to `export.py` — never retraining.
+
+```
+dataset.csv ──train.py──> custom-lora-adapter ──merge.py──> merged-whisper-model
+                                                                   │
+                                              export.py ───────────┼──> exports/ct2  (faster-whisper, WhisperX)
+                                                                   └──> exports/*.bin (whisper.cpp, OpenWhispr)
+```
+
+`whisper_pipeline.py` is the boundary layer: constants, paths, and every third-party
+workaround live there so a library upgrade is a one-function edit. Prefer extending it
+over scattering fixes across scripts.
+
+### Bilingual training
+
+One adapter serves both languages because `train.encode_example` calls
+`tokenizer.set_prefix_tokens(language=row["language"], ...)` **per row**, so each sample
+carries its own `<|en|>`/`<|es|>` token. Setting the language once globally would collapse
+the two languages — this is the load-bearing detail of the whole approach.
+
+## Version-specific constraints
+
+This stack is transformers 5.x / datasets 5.x. Tutorials written for 4.x break here:
+
+- **`datasets` cannot decode audio** without `torchcodec`, and returns a decoder object
+  rather than an array. The CSV keeps plain paths; `wp.load_audio()` decodes via librosa.
+  Do not `cast_column("audio", Audio())`.
+- **`save_pretrained` no longer writes** `vocab.json` / `added_tokens.json` / `merges.txt`.
+  **whisper.cpp's converter reads them directly and fails without them; CTranslate2 does
+  not need them.** `merge.py` calls `restore_legacy_tokenizer_files()` to copy the
+  canonical files from the base-model snapshot — fine-tuning never alters the tokenizer,
+  so copying is correct, not a workaround.
+- **`ct2-transformers-converter --copy_files` may only name files that exist** in the
+  model dir, or it aborts. transformers 5.x writes `processor_config.json`, *not*
+  `preprocessor_config.json`.
+- `Seq2SeqTrainingArguments`: `use_mps_device` was removed (accelerate detects MPS on
+  its own), and `evaluation_strategy` is now `eval_strategy` — relevant if an eval split
+  is added, since `train.py` currently trains without one.
+- Training keeps `fp16=False, bf16=False` (MPS half precision is unreliable),
+  `dataloader_num_workers=0` (forked workers are flaky on MPS), and
+  `remove_unused_columns=False` + `label_names=["labels"]` (required under PEFT).
+
+## OpenWhispr integration
+
+OpenWhispr resolves models through a fixed registry (`tiny|base|small|medium|large|turbo`)
+and rejects any other name as a path-traversal guard. There is no custom-path setting, so
+`convert.sh` installs the build as `~/.cache/openwhispr/whisper-models/ggml-small.bin`
+(backing up the original to `.orig`) and the user selects "small". The Homebrew cask is
+`openwhispr` — `open-wispr` does not exist.
+
+Cloud services (Speechify, Claude Code) run recognition server-side and cannot load this
+model at all; OpenWhispr covers them by typing into whatever app is focused.
+
+## Conventions
+
+- Reading material for `record_data.py --text` goes in `scripts/` (gitignored, user-managed).
+- `data/`, `dataset.csv`, and all model directories are gitignored — audio is personal,
+  models are regenerable.
+- Tests mock only what is slow or external. Unit tests fake the processor; the integration
+  tier asserts those fakes match the real API. When changing a fake, update its integration
+  counterpart in `tests/integration/test_processor.py`.
+- Comments explain *why* (a version quirk, a downstream requirement), not what the line does.
