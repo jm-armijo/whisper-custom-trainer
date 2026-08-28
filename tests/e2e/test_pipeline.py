@@ -6,6 +6,7 @@ Run with: pytest -m e2e
 
 import shutil
 import subprocess
+import sys
 
 import pytest
 
@@ -18,8 +19,24 @@ SPOKEN_SPANISH = "Hola, estoy probando el modelo"
 
 
 def require(executable):
-    if shutil.which(executable) is None:
+    if resolve(executable) is None:
         pytest.skip(f"{executable} not installed")
+
+
+def resolve(executable):
+    """Find a tool, including console scripts in the venv running these tests.
+
+    Invoking pytest as `venv/bin/python -m pytest` does not put venv/bin on
+    PATH, so a plain shutil.which misses ct2-transformers-converter even though
+    it is installed, and the test silently skips.
+    """
+    from pathlib import Path
+
+    found = shutil.which(executable)
+    if found:
+        return found
+    local = Path(sys.executable).parent / executable
+    return str(local) if local.exists() else None
 
 
 @pytest.fixture(scope="module")
@@ -65,6 +82,19 @@ def exports(tmp_path_factory, merged_model, monkeypatch_module):
     return directory
 
 
+def require_ct2_export(exports):
+    """Skip unless the export test actually produced a model directory.
+
+    faster_whisper treats a non-existent path as a Hub model ID and tries to
+    download it, so a missing export surfaced as an unrelated HFValidationError
+    rather than a skip.
+    """
+    model_dir = exports / "ct2"
+    if not model_dir.is_dir():
+        pytest.skip("ct2 export not produced")
+    return model_dir
+
+
 class TestCtranslate2Export:
     def test_export_produces_a_loadable_model(self, exports, merged_model):
         require("ct2-transformers-converter")
@@ -75,8 +105,9 @@ class TestCtranslate2Export:
 
     def test_faster_whisper_transcribes_english(self, exports, spoken_clip):
         faster_whisper = pytest.importorskip("faster_whisper")
+        model_dir = require_ct2_export(exports)
 
-        model = faster_whisper.WhisperModel(str(exports / "ct2"), device="cpu",
+        model = faster_whisper.WhisperModel(str(model_dir), device="cpu",
                                             compute_type="int8")
         segments, _ = model.transcribe(str(spoken_clip(SPOKEN_ENGLISH, "Samantha")),
                                        language="en")
@@ -84,8 +115,9 @@ class TestCtranslate2Export:
 
     def test_faster_whisper_transcribes_spanish(self, exports, spoken_clip):
         faster_whisper = pytest.importorskip("faster_whisper")
+        model_dir = require_ct2_export(exports)
 
-        model = faster_whisper.WhisperModel(str(exports / "ct2"), device="cpu",
+        model = faster_whisper.WhisperModel(str(model_dir), device="cpu",
                                             compute_type="int8")
         segments, _ = model.transcribe(str(spoken_clip(SPOKEN_SPANISH, "Monica")),
                                        language="es")

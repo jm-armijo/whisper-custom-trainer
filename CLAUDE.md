@@ -105,6 +105,12 @@ This stack is transformers 5.x / datasets 5.x. Tutorials written for 4.x break h
 - **`ct2-transformers-converter --copy_files` may only name files that exist** in the
   model dir, or it aborts. transformers 5.x writes `processor_config.json`, *not*
   `preprocessor_config.json`.
+- **`ct2-transformers-converter` is a console script**, resolved via
+  `export.converter_command()` rather than a bare name. `shutil.which` only finds it
+  when the venv is on `PATH`, so `venv/bin/python export.py` without activating hit a
+  raw `FileNotFoundError` — and tests guarding on `which` skipped silently, hiding
+  real failures. Look it up beside `sys.executable` first.
+
 - `Seq2SeqTrainingArguments`: `use_mps_device` was removed (accelerate detects MPS on
   its own), and `evaluation_strategy` is now `eval_strategy` — relevant if an eval split
   is added, since `train.py` currently trains without one.
