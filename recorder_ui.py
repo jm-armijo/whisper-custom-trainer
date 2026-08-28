@@ -18,6 +18,11 @@ RECORDING = "recording"
 
 ESCAPE_TIMEOUT_MS = 50   # bounds the wait for the tail of an escape sequence
 
+def _span(width):
+    """Writable columns: the last cell of a line is never addressable."""
+    return max(width - 1, 0)
+
+
 GUTTER = 6          # "  12 ✓" before the text column
 MARK_RECORDED = "✓"
 CURSOR_MARK = "▸"
@@ -126,7 +131,7 @@ class RecorderUI:
         self.stdscr.refresh()
 
     def _draw_title(self, view, width):
-        self._put(0, 0, view["title"].ljust(width - 1)[: width - 1], self.attr("border"))
+        self._put(0, 0, view["title"].ljust(_span(width))[: _span(width)], self.attr("border"))
 
     def _draw_lines(self, view, body_height, width):
         statuses = view["statuses"]
@@ -151,7 +156,7 @@ class RecorderUI:
                     f"{mark}{index + 1:>3} {tick} " if offset == 0
                     else " " * GUTTER
                 )
-                self._put(row, 0, (prefix + piece)[: width - 1], attribute)
+                self._put(row, 0, (prefix + piece)[: _span(width)], attribute)
                 row += 1
 
     def _draw_status(self, view, height, width):
@@ -165,11 +170,11 @@ class RecorderUI:
         else:
             label = f" {view['state'].upper()} │ {LEGEND_IDLE}"
 
-        self._put(height - 1, 0, label.ljust(width - 1)[: width - 1], attribute)
+        self._put(height - 1, 0, label.ljust(_span(width))[: _span(width)], attribute)
 
         message = view.get("message") or ""
         if message:
-            self._put(height - 2, 0, message[: width - 1], self.attr("message"))
+            self._put(height - 2, 0, message[: _span(width)], self.attr("message"))
 
     def _put(self, row, column, text, attribute):
         """addstr past the last cell raises; the final cell is never writable."""
@@ -187,27 +192,31 @@ class RecorderUI:
         if key == curses.KEY_RESIZE:
             return "resize"
         if key == 27:
-            return self._read_escape()
+            return self._read_escape(-1 if timeout_ms is None else int(timeout_ms))
         return KEY_ACTIONS.get(key)
 
-    def _read_escape(self):
+    def _read_escape(self, restore_ms):
         """Decode a raw CSI arrow, or treat a lone ESC as a cancel.
 
-        ESCDELAY bounds how long a bare ESC waits for the rest of a sequence.
+        The short window is restored to the caller's timeout on the way out, so
+        a following blocking read does not inherit it and return -1 at once.
         """
-        self.stdscr.timeout(ESCAPE_TIMEOUT_MS)
-        if self.stdscr.getch() != ord("["):
-            return None
-        final = self.stdscr.getch()
-        while final != -1 and ord("0") <= final <= ord("?"):
-            final = self.stdscr.getch()   # skip numeric parameters
-        return ESCAPE_FINALS.get(final)
+        try:
+            self.stdscr.timeout(ESCAPE_TIMEOUT_MS)
+            if self.stdscr.getch() != ord("["):
+                return None
+            final = self.stdscr.getch()
+            while final != -1 and ord("0") <= final <= ord("?"):
+                final = self.stdscr.getch()   # skip numeric parameters
+            return ESCAPE_FINALS.get(final)
+        finally:
+            self.stdscr.timeout(restore_ms)
 
     def confirm(self, question):
         """Blocking y/n prompt in the status bar."""
         height, width = self.stdscr.getmaxyx()
         self._put(
-            height - 1, 0, f" {question} ".ljust(width - 1)[: width - 1],
+            height - 1, 0, f" {question} ".ljust(_span(width))[: _span(width)],
             self.attr("status_recording"),
         )
         self.stdscr.refresh()
@@ -216,7 +225,9 @@ class RecorderUI:
             key = self.stdscr.getch()
             if key in (ord("y"), ord("Y")):
                 return True
-            if key in (ord("n"), ord("N"), 27, ord("q")):
+            # -1 means the input is gone (EOF or interrupted read); declining
+            # keeps the existing take rather than spinning forever.
+            if key in (-1, ord("n"), ord("N"), 27, ord("q")):
                 return False
 
 

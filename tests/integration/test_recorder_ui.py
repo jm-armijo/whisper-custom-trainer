@@ -297,3 +297,43 @@ class TestRawEscapeSequences:
     def test_escape_followed_by_other_text_is_ignored(self, widget, screen):
         screen.keys = [27, ord("x")]
         assert widget.read_key() is None
+
+
+class TestConfirmOnClosedInput:
+    """A -1 read means no key; confirm must not spin on it."""
+
+    @pytest.fixture
+    def widget(self, screen, theme, monkeypatch):
+        monkeypatch.setattr(curses, "has_colors", lambda: False)
+        monkeypatch.setattr(curses, "curs_set", lambda _: None)
+        return ui.RecorderUI(screen, theme)
+
+    def test_exhausted_input_declines_rather_than_looping(self, widget, screen):
+        screen.keys = []          # every getch returns -1
+        assert widget.confirm("Re-record line 1?") is False
+
+
+class TestEscapeRestoresTimeout:
+    @pytest.fixture
+    def widget(self, screen, theme, monkeypatch):
+        monkeypatch.setattr(curses, "has_colors", lambda: False)
+        monkeypatch.setattr(curses, "curs_set", lambda _: None)
+        return ui.RecorderUI(screen, theme)
+
+    def test_timeout_is_restored_after_an_escape(self, widget, screen):
+        """A 50ms escape window must not leak into the next blocking read."""
+        screen.keys = [27, ord("x")]
+        widget.read_key(timeout_ms=1000)
+        assert screen.timeouts[-1] == 1000
+
+
+class TestZeroWidthScreen:
+    def test_a_zero_width_screen_draws_nothing_rather_than_garbage(
+        self, theme, view, monkeypatch
+    ):
+        monkeypatch.setattr(curses, "has_colors", lambda: False)
+        monkeypatch.setattr(curses, "curs_set", lambda _: None)
+        screen = StubScreen(height=5, width=0)
+        widget = ui.RecorderUI(screen, theme)
+        widget.draw(view())
+        assert all(text == "" for _, _, text, _ in screen.writes)

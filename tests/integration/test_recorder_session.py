@@ -21,7 +21,9 @@ def fake_microphone(monkeypatch):
     """Replace the mic with 1.5s of silence; file writing stays real."""
     monkeypatch.setattr(
         record_data, "capture_clip",
-        lambda ui_, on_tick: np.zeros(int(wp.SAMPLE_RATE * 1.5), dtype="float32"),
+        lambda ui_, on_tick: (
+            np.zeros(int(wp.SAMPLE_RATE * 1.5), dtype="float32"), "record"
+        ),
     )
 
 
@@ -190,9 +192,36 @@ class TestClipRejection:
     def test_a_clip_too_short_is_not_saved(self, session, monkeypatch, drive):
         monkeypatch.setattr(
             record_data, "capture_clip",
-            lambda ui_, on_tick: np.zeros(int(wp.SAMPLE_RATE * 0.1), dtype="float32"),
+            lambda ui_, on_tick: (
+                np.zeros(int(wp.SAMPLE_RATE * 0.1), dtype="float32"), "record"
+            ),
         )
 
         drive(["uno dos"], [SPACE, QUIT])
+
+        assert rows_of(session.csv) == []
+
+
+class TestQuitWhileRecording:
+    def test_q_during_a_take_exits_the_session(
+        self, session, fake_microphone, drive
+    ):
+        """q must stop the take and quit, not just stop the take."""
+        screen = drive(["uno dos", "tres cuatro"], [SPACE, QUIT])
+
+        # If q only stopped the recording, the loop would still be waiting.
+        assert screen.keys == []
+
+    def test_q_during_a_take_does_not_save_the_clip(
+        self, session, monkeypatch, drive
+    ):
+        """Quitting mid-take abandons it rather than committing a partial read."""
+        monkeypatch.setattr(
+            record_data, "capture_clip",
+            lambda ui_, on_tick: (
+                np.zeros(int(wp.SAMPLE_RATE * 1.5), dtype="float32"), "quit"
+            ),
+        )
+        drive(["uno dos"], [SPACE])
 
         assert rows_of(session.csv) == []

@@ -50,6 +50,9 @@ def read_script(path):
 def run(stdscr, chunks, args, theme):
     """Event loop: draw, read a key, act, repeat until quit."""
     view = ui.RecorderUI(stdscr, theme)
+    # A clip deleted between sessions leaves a row pointing at a missing file,
+    # which train.py cannot load; drop those before deriving what is recorded.
+    rs.prune_missing(args.csv, args.out_dir)
     recorded = rs.recorded_indices(args.csv, args.out_dir, args.lang)
     cursor = rs.first_unrecorded(len(chunks), recorded)
     message = ""
@@ -64,9 +67,11 @@ def run(stdscr, chunks, args, theme):
             cursor = move_cursor(cursor, action, len(chunks))
             message = ""
         elif action in ("record", "redo"):
-            recorded, message = handle_record(
+            recorded, message, quitting = handle_record(
                 view, chunks, recorded, cursor, args, theme
             )
+            if quitting:
+                return
         elif action == "play":
             message = play_clip(args, cursor, recorded)
         elif action == "skip":
@@ -105,24 +110,30 @@ def handle_record(view, chunks, recorded, cursor, args, theme):
     if cursor in recorded and not view.confirm(
         f"Re-record line {cursor + 1}? (y/n)"
     ):
-        return recorded, "kept the existing take"
+        return recorded, "kept the existing take", False
 
     def redraw(tick, elapsed):
         view.draw(build_view(
             chunks, recorded, cursor, args, "", ui.RECORDING, tick, elapsed
         ))
 
-    clip = capture_clip(view, redraw)
+    clip, stopped_by = capture_clip(view, redraw)
+
+    # Quitting mid-take abandons it: a clip cut short by 'q' is not a read the
+    # user intended to keep, and committing it would mislabel the dataset.
+    if stopped_by == "quit":
+        return recorded, "quit", True
 
     if is_unusable(clip):
         seconds = len(clip) / wp.SAMPLE_RATE
-        return recorded, f"discarded: {seconds:.2f}s is too short to use"
+        kept = " - previous take kept" if cursor in recorded else ""
+        return recorded, f"discarded: {seconds:.2f}s is too short to use{kept}", False
 
     destination = rs.clip_path(args.out_dir, args.lang, cursor)
     write_clip(destination, clip)
     rs.upsert_row(args.csv, destination, chunks[cursor], args.lang)
 
-    return recorded | {cursor}, saved_message(clip)
+    return recorded | {cursor}, saved_message(clip), False
 
 
 def saved_message(clip):
@@ -133,10 +144,11 @@ def saved_message(clip):
 
 
 def capture_clip(view, on_tick):
-    """Capture microphone input until the stop key, ticking for the blink.
+    """Capture until the stop key, returning (clip, stopping action).
 
-    The sounddevice callback fills frames on its own thread while curses polls
-    for a keypress, so the dot keeps blinking throughout the take.
+    The stopping key is returned rather than discarded so 'q' can both end the
+    take and quit the session; the sounddevice callback fills frames on its own
+    thread while curses polls, which is what keeps the dot blinking.
     """
     import numpy as np
     import sounddevice as sd
@@ -145,6 +157,7 @@ def capture_clip(view, on_tick):
     started = time.monotonic()
     tick = 0
 
+    stopped_by = "record"
     with sd.InputStream(
         samplerate=wp.SAMPLE_RATE, channels=1, dtype="float32",
         callback=lambda data, *_: frames.append(data.copy()),
@@ -153,13 +166,14 @@ def capture_clip(view, on_tick):
         while True:
             action = view.read_key(timeout_ms=view.theme.blink_ms)
             if action in ("record", "redo", "quit"):
+                stopped_by = action
                 break
             tick += 1
             on_tick(tick, time.monotonic() - started)
 
     if not frames:
-        return np.zeros(0, dtype="float32")
-    return np.concatenate(frames, axis=0).flatten()
+        return np.zeros(0, dtype="float32"), stopped_by
+    return np.concatenate(frames, axis=0).flatten(), stopped_by
 
 
 def play_clip(args, cursor, recorded):

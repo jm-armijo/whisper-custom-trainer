@@ -109,3 +109,27 @@ class TestBlinkGlyph:
 
     def test_hollow_on_the_odd_tick(self):
         assert rt.blink_glyph(1) == "○"
+
+
+class TestMalformedConfig:
+    """A hand-edited config must fail with a clear error, not a traceback."""
+
+    def test_style_given_a_string_instead_of_a_mapping(self, theme_file):
+        with pytest.raises(wp.PipelineError, match="recorded"):
+            rt.load_theme(theme_file({"recorded": "green"}))
+
+    def test_top_level_array_is_rejected(self, tmp_path):
+        path = tmp_path / "arr.json"
+        path.write_text("[1, 2, 3]", encoding="utf8")
+        with pytest.raises(wp.PipelineError):
+            rt.load_theme(path)
+
+    def test_non_string_colour_is_rejected(self, theme_file):
+        with pytest.raises(wp.PipelineError, match="pending"):
+            rt.load_theme(theme_file({"pending": {"fg": 123}}))
+
+    def test_top_level_string_is_rejected(self, tmp_path):
+        path = tmp_path / "s.json"
+        path.write_text('"hello"', encoding="utf8")
+        with pytest.raises(wp.PipelineError):
+            rt.load_theme(path)

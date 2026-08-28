@@ -110,32 +110,6 @@ def count_recorded_chunks(csv_path, language):
         return sum(1 for row in csv.DictReader(handle) if row["language"] == language)
 
 
-def next_chunk_index(csv_path, language):
-    """Return the chunk index a resumed session should start from.
-
-    Derived from the recorded filenames rather than the row count, because a
-    skipped chunk leaves a gap: counting rows would restart before an index that
-    is already on disk and append a duplicate row for it.
-    """
-    import csv
-    import re
-
-    path = Path(csv_path)
-    if not path.exists():
-        return 0
-
-    highest = -1
-    with path.open(newline="", encoding="utf8") as handle:
-        for row in csv.DictReader(handle):
-            if row["language"] != language:
-                continue
-            match = re.search(rf"{language}_(\d+)\.wav$", row["audio_path"])
-            if match:
-                highest = max(highest, int(match.group(1)))
-
-    return highest + 1
-
-
 def load_audio(path):
     """Decode any audio file to a 16 kHz mono float array.
 

@@ -1,6 +1,7 @@
 """Chunk status derives from the CSV and the wav files that actually exist."""
 
 import csv
+from pathlib import Path
 
 import pytest
 
@@ -124,3 +125,65 @@ class TestUpsertRow:
 
         rows = list(csv.DictReader(path.open(newline="", encoding="utf8")))
         assert rows[0]["text"] == "¿Cómo estás, amigo?"
+
+
+class TestPathNormalisation:
+    """The same clip reached by different paths must stay one row."""
+
+    def test_absolute_and_relative_paths_are_one_row(self, tmp_path, monkeypatch):
+        path = tmp_path / "dataset.csv"
+        (tmp_path / "data").mkdir()
+        rs.upsert_row(path, tmp_path / "data" / "es_00003.wav", "primera", "es")
+
+        monkeypatch.chdir(tmp_path)
+        rs.upsert_row(path, Path("data/es_00003.wav"), "segunda", "es")
+
+        rows = list(csv.DictReader(path.open(newline="", encoding="utf8")))
+        assert len(rows) == 1
+
+    def test_the_later_take_wins(self, tmp_path, monkeypatch):
+        path = tmp_path / "dataset.csv"
+        (tmp_path / "data").mkdir()
+        rs.upsert_row(path, tmp_path / "data" / "es_00003.wav", "primera", "es")
+
+        monkeypatch.chdir(tmp_path)
+        rs.upsert_row(path, Path("data/es_00003.wav"), "segunda", "es")
+
+        rows = list(csv.DictReader(path.open(newline="", encoding="utf8")))
+        assert rows[0]["text"] == "segunda"
+
+
+class TestPruneMissing:
+    """A deleted clip must not leave a row pointing at a missing file."""
+
+    def test_removes_a_row_whose_wav_is_gone(self, dataset):
+        csv_path, audio_dir = dataset([(0, "es", True), (1, "es", False)])
+
+        rs.prune_missing(csv_path, audio_dir)
+
+        rows = list(csv.DictReader(csv_path.open(newline="", encoding="utf8")))
+        assert len(rows) == 1
+
+    def test_keeps_rows_whose_wav_exists(self, dataset):
+        csv_path, audio_dir = dataset([(0, "es", True), (1, "es", True)])
+
+        rs.prune_missing(csv_path, audio_dir)
+
+        rows = list(csv.DictReader(csv_path.open(newline="", encoding="utf8")))
+        assert len(rows) == 2
+
+    def test_keeps_rows_for_other_languages(self, dataset):
+        csv_path, audio_dir = dataset([(0, "en", True), (1, "es", True)])
+
+        rs.prune_missing(csv_path, audio_dir)
+
+        rows = list(csv.DictReader(csv_path.open(newline="", encoding="utf8")))
+        assert len(rows) == 2
+
+    def test_reports_how_many_were_pruned(self, dataset):
+        csv_path, audio_dir = dataset([(0, "es", False), (1, "es", False)])
+
+        assert rs.prune_missing(csv_path, audio_dir) == 2
+
+    def test_absent_dataset_is_a_no_op(self, tmp_path):
+        assert rs.prune_missing(tmp_path / "none.csv", tmp_path) == 0

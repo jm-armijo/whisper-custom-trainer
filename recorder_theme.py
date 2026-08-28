@@ -92,14 +92,29 @@ def load_theme(path=None):
     """
     source = Path(path) if path is not None else DEFAULT_THEME_PATH
     payload = _read_payload(source)
+    if not isinstance(payload, dict):
+        raise wp.PipelineError(
+            f"{source} must contain a JSON object, got {type(payload).__name__}"
+        )
 
     blink_ms = _validate_blink(payload.pop("blink_ms", DEFAULT_BLINK_MS))
 
     styles = {}
     for name, defaults in DEFAULTS.items():
-        merged = {**defaults, **payload.get(name, {})}
+        override = payload.get(name, {})
+        if not isinstance(override, dict):
+            raise wp.PipelineError(
+                f"{name} must be an object like "
+                f'{{"fg": "green"}}, got {type(override).__name__}'
+            )
+        merged = {**defaults, **override}
         for key in ("fg", "bg"):
             if key in merged:
+                if not isinstance(merged[key], str):
+                    raise wp.PipelineError(
+                        f"{name}.{key} must be a colour name string, "
+                        f"got {merged[key]!r}"
+                    )
                 _validate_colour(name, merged[key])
         styles[name] = Style(
             fg=merged.get("fg", "default"),
