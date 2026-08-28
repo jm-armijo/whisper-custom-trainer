@@ -1,4 +1,4 @@
-"""Drives record_data end to end with a stubbed microphone and real file writes."""
+"""Drives the recorder controller with a stub screen and a silent microphone."""
 
 import csv
 
@@ -6,120 +6,193 @@ import numpy as np
 import pytest
 
 import record_data
+import recorder_state as rs
+import recorder_theme as rt
+import recorder_ui as ui
 import whisper_pipeline as wp
+
+from tests.integration.test_recorder_ui import StubScreen
 
 pytestmark = pytest.mark.integration
 
 
 @pytest.fixture
 def fake_microphone(monkeypatch):
-    """Replace the mic with silence; everything else stays real."""
+    """Replace the mic with 1.5s of silence; file writing stays real."""
     monkeypatch.setattr(
-        record_data, "record_clip",
-        lambda: np.zeros(int(wp.SAMPLE_RATE * 1.5), dtype="float32"),
+        record_data, "capture_clip",
+        lambda ui_, on_tick: np.zeros(int(wp.SAMPLE_RATE * 1.5), dtype="float32"),
     )
-
-
-@pytest.fixture
-def keystrokes(monkeypatch):
-    """Feed a scripted sequence of console inputs."""
-    def script(responses):
-        pending = iter(responses)
-        monkeypatch.setattr("builtins.input", lambda *_: next(pending, "q"))
-    return script
 
 
 @pytest.fixture
 def session(tmp_path):
     from argparse import Namespace
 
-    return Namespace(
-        out_dir=tmp_path / "data",
-        csv=tmp_path / "dataset.csv",
-        lang="es",
-    )
+    out_dir = tmp_path / "data"
+    out_dir.mkdir()
+    return Namespace(out_dir=out_dir, csv=tmp_path / "dataset.csv", lang="es")
 
 
-def read_rows(csv_path):
+@pytest.fixture
+def drive(monkeypatch, session):
+    """Run the controller against scripted keys, returning the stub screen."""
+    import curses
+
+    def run(chunks, keys, recorded=None):
+        monkeypatch.setattr(curses, "has_colors", lambda: False)
+        monkeypatch.setattr(curses, "curs_set", lambda _: None)
+        screen = StubScreen()
+        screen.keys = list(keys)
+        theme = rt.load_theme(rt.DEFAULT_THEME_PATH)
+        record_data.run(screen, chunks, session, theme)
+        return screen
+
+    return run
+
+
+def rows_of(csv_path):
+    if not csv_path.exists():
+        return []
     with csv_path.open(newline="", encoding="utf8") as handle:
         return list(csv.DictReader(handle))
 
 
-class TestRecordSession:
-    def test_writes_one_wav_and_one_row_per_chunk(
-        self, session, fake_microphone, keystrokes
-    ):
-        session.out_dir.mkdir(parents=True)
-        keystrokes(["", "", "", ""])
+KEY_DOWN, KEY_UP = 258, 259     # curses.KEY_DOWN / KEY_UP
+SPACE, QUIT, YES, NO = ord(" "), ord("q"), ord("y"), ord("n")
 
-        record_data.record_session(["uno dos tres", "cuatro cinco seis"], 0, session)
 
-        assert len(list(session.out_dir.glob("*.wav"))) == 2
-        assert len(read_rows(session.csv)) == 2
+class TestRecording:
+    def test_records_the_selected_chunk(self, session, fake_microphone, drive):
+        drive(["uno dos tres"], [SPACE, QUIT])
 
-    def test_saved_audio_is_16khz_mono(self, session, fake_microphone, keystrokes):
+        assert (session.out_dir / "es_00000.wav").exists()
+
+    def test_writes_one_row_per_recording(self, session, fake_microphone, drive):
+        drive(["uno dos tres"], [SPACE, QUIT])
+
+        assert len(rows_of(session.csv)) == 1
+
+    def test_saved_audio_is_16khz_mono(self, session, fake_microphone, drive):
         import soundfile as sf
 
-        session.out_dir.mkdir(parents=True)
-        keystrokes(["", ""])
+        drive(["uno dos tres"], [SPACE, QUIT])
 
-        record_data.record_session(["uno dos tres"], 0, session)
-
-        info = sf.info(str(next(session.out_dir.glob("*.wav"))))
+        info = sf.info(str(session.out_dir / "es_00000.wav"))
         assert (info.samplerate, info.channels) == (wp.SAMPLE_RATE, 1)
 
-    def test_skip_leaves_no_recording(self, session, fake_microphone, keystrokes):
-        session.out_dir.mkdir(parents=True)
-        keystrokes(["s"])
-
-        record_data.record_session(["uno dos tres"], 0, session)
-
-        assert not session.csv.exists()
-
-    def test_quit_stops_before_recording(self, session, fake_microphone, keystrokes):
-        session.out_dir.mkdir(parents=True)
-        keystrokes(["q"])
-
-        record_data.record_session(["uno", "dos"], 0, session)
-
-        assert not session.csv.exists()
-
-    def test_redo_replaces_the_take(self, session, fake_microphone, keystrokes):
-        session.out_dir.mkdir(parents=True)
-        # start, redo, start, keep
-        keystrokes(["", "r", "", ""])
-
-        record_data.record_session(["uno dos tres"], 0, session)
-
-        assert len(read_rows(session.csv)) == 1
-
-    def test_filenames_encode_language_and_index(
-        self, session, fake_microphone, keystrokes
+    def test_filename_encodes_language_and_index(
+        self, session, fake_microphone, drive
     ):
-        session.out_dir.mkdir(parents=True)
-        keystrokes(["", ""])
+        drive(["uno", "dos"], [KEY_DOWN, SPACE, QUIT])
 
-        record_data.record_session(["uno dos tres"], 0, session)
+        assert (session.out_dir / "es_00001.wav").exists()
 
-        assert next(session.out_dir.glob("*.wav")).name == "es_00000.wav"
-
-    def test_resume_continues_at_the_requested_index(
-        self, session, fake_microphone, keystrokes
+    def test_quit_without_recording_leaves_no_dataset(
+        self, session, fake_microphone, drive
     ):
-        session.out_dir.mkdir(parents=True)
-        keystrokes(["", ""])
+        drive(["uno dos"], [QUIT])
 
-        record_data.record_session(["uno", "dos", "tres"], 2, session)
+        assert rows_of(session.csv) == []
 
-        assert next(session.out_dir.glob("*.wav")).name == "es_00002.wav"
+    def test_text_is_stored_with_the_clip(self, session, fake_microphone, drive):
+        drive(["¿Cómo estás, amigo?"], [SPACE, QUIT])
 
-    def test_recorded_rows_are_countable_for_the_next_session(
-        self, session, fake_microphone, keystrokes
+        assert rows_of(session.csv)[0]["text"] == "¿Cómo estás, amigo?"
+
+
+class TestNavigation:
+    def test_arrow_down_moves_the_cursor(self, session, fake_microphone, drive):
+        drive(["uno", "dos", "tres"], [KEY_DOWN, KEY_DOWN, SPACE, QUIT])
+
+        assert (session.out_dir / "es_00002.wav").exists()
+
+    def test_arrow_up_returns_to_an_earlier_line(
+        self, session, fake_microphone, drive
     ):
-        """A resumed run must see what the previous run wrote."""
-        session.out_dir.mkdir(parents=True)
-        keystrokes(["", "", "", ""])
+        drive(["uno", "dos"], [KEY_DOWN, KEY_UP, SPACE, QUIT])
 
-        record_data.record_session(["uno dos", "tres cuatro"], 0, session)
+        assert (session.out_dir / "es_00000.wav").exists()
 
-        assert wp.count_recorded_chunks(session.csv, "es") == 2
+    def test_cursor_does_not_move_above_the_first_line(
+        self, session, fake_microphone, drive
+    ):
+        drive(["uno", "dos"], [KEY_UP, KEY_UP, SPACE, QUIT])
+
+        assert (session.out_dir / "es_00000.wav").exists()
+
+    def test_cursor_does_not_move_past_the_last_line(
+        self, session, fake_microphone, drive
+    ):
+        drive(["uno", "dos"], [KEY_DOWN, KEY_DOWN, KEY_DOWN, SPACE, QUIT])
+
+        assert (session.out_dir / "es_00001.wav").exists()
+
+
+class TestReRecording:
+    def test_confirming_overwrites_the_existing_row(
+        self, session, fake_microphone, drive
+    ):
+        drive(["uno dos"], [SPACE, QUIT])
+        drive(["uno dos"], [SPACE, YES, QUIT])
+
+        assert len(rows_of(session.csv)) == 1
+
+    def test_declining_leaves_the_recording_untouched(
+        self, session, fake_microphone, drive
+    ):
+        drive(["uno dos"], [SPACE, QUIT])
+        original = (session.out_dir / "es_00000.wav").read_bytes()
+
+        drive(["uno dos"], [SPACE, NO, QUIT])
+
+        assert (session.out_dir / "es_00000.wav").read_bytes() == original
+
+    def test_first_recording_needs_no_confirmation(
+        self, session, fake_microphone, drive
+    ):
+        """An unrecorded line must record on one keypress."""
+        drive(["uno dos"], [SPACE, QUIT])
+
+        assert len(rows_of(session.csv)) == 1
+
+
+class TestResume:
+    def test_cursor_starts_at_the_first_unrecorded_line(
+        self, session, fake_microphone, drive
+    ):
+        drive(["uno", "dos", "tres"], [SPACE, QUIT])
+
+        # Fresh session: cursor should land on line 2, so SPACE records index 1.
+        drive(["uno", "dos", "tres"], [SPACE, QUIT])
+
+        assert (session.out_dir / "es_00001.wav").exists()
+
+    def test_a_deleted_clip_reopens_its_line(self, session, fake_microphone, drive):
+        drive(["uno", "dos"], [SPACE, QUIT])
+        (session.out_dir / "es_00000.wav").unlink()
+
+        recorded = rs.recorded_indices(session.csv, session.out_dir, "es")
+
+        assert recorded == set()
+
+    def test_recorded_lines_survive_a_restart(
+        self, session, fake_microphone, drive
+    ):
+        drive(["uno", "dos"], [SPACE, QUIT])
+
+        recorded = rs.recorded_indices(session.csv, session.out_dir, "es")
+
+        assert recorded == {0}
+
+
+class TestClipRejection:
+    def test_a_clip_too_short_is_not_saved(self, session, monkeypatch, drive):
+        monkeypatch.setattr(
+            record_data, "capture_clip",
+            lambda ui_, on_tick: np.zeros(int(wp.SAMPLE_RATE * 0.1), dtype="float32"),
+        )
+
+        drive(["uno dos"], [SPACE, QUIT])
+
+        assert rows_of(session.csv) == []

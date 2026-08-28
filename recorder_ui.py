@@ -7,6 +7,7 @@ all of that and hands this class a plain view description to draw.
 
 import curses
 import locale
+import os
 import textwrap
 
 import recorder_state as rs
@@ -14,6 +15,8 @@ import recorder_theme as rt
 
 IDLE = "idle"
 RECORDING = "recording"
+
+ESCAPE_TIMEOUT_MS = 50   # bounds the wait for the tail of an escape sequence
 
 GUTTER = 6          # "  12 ✓" before the text column
 MARK_RECORDED = "✓"
@@ -35,6 +38,11 @@ KEY_ACTIONS = {
 }
 
 LEGEND_IDLE = "↑↓ move  ␣ record  r redo  p play  s skip  q quit"
+
+# Some terminals deliver arrows as a raw ESC [ A sequence rather than letting
+# keypad() fold them into a KEY_* constant. The final byte identifies the key.
+ESCAPE_FINALS = {ord("A"): "up", ord("B"): "down",
+                 ord("H"): "top", ord("F"): "bottom"}
 LEGEND_RECORDING = "␣ stop"
 
 
@@ -178,7 +186,22 @@ class RecorderUI:
             return None
         if key == curses.KEY_RESIZE:
             return "resize"
+        if key == 27:
+            return self._read_escape()
         return KEY_ACTIONS.get(key)
+
+    def _read_escape(self):
+        """Decode a raw CSI arrow, or treat a lone ESC as a cancel.
+
+        ESCDELAY bounds how long a bare ESC waits for the rest of a sequence.
+        """
+        self.stdscr.timeout(ESCAPE_TIMEOUT_MS)
+        if self.stdscr.getch() != ord("["):
+            return None
+        final = self.stdscr.getch()
+        while final != -1 and ord("0") <= final <= ord("?"):
+            final = self.stdscr.getch()   # skip numeric parameters
+        return ESCAPE_FINALS.get(final)
 
     def confirm(self, question):
         """Blocking y/n prompt in the status bar."""
@@ -204,4 +227,6 @@ def start(main, *args):
     render as replacement characters.
     """
     locale.setlocale(locale.LC_ALL, "")
+    # Without this a lone ESC blocks for a full second waiting for a sequence.
+    os.environ.setdefault("ESCDELAY", "25")
     return curses.wrapper(main, *args)

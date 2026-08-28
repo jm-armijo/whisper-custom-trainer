@@ -265,3 +265,35 @@ class TestConfirm:
         screen.keys = [ord("n")]
         widget.confirm("Re-record line 5?")
         assert any("Re-record line 5?" in t for _, _, t, _ in screen.writes)
+
+
+class TestRawEscapeSequences:
+    """Some terminals send arrows as raw ESC [ A rather than a KEY_* constant."""
+
+    @pytest.fixture
+    def widget(self, screen, theme, monkeypatch):
+        monkeypatch.setattr(curses, "has_colors", lambda: False)
+        monkeypatch.setattr(curses, "curs_set", lambda _: None)
+        return ui.RecorderUI(screen, theme)
+
+    @pytest.mark.parametrize("final,action", [
+        ("A", "up"), ("B", "down"), ("H", "top"), ("F", "bottom"),
+    ])
+    def test_raw_arrow_sequence_maps_to_its_action(
+        self, widget, screen, final, action
+    ):
+        screen.keys = [27, ord("["), ord(final)]
+        assert widget.read_key() == action
+
+    def test_parameterised_sequence_is_decoded(self, widget, screen):
+        """xterm may send ESC [ 1 ; 2 B for a modified arrow."""
+        screen.keys = [27, ord("["), ord("1"), ord(";"), ord("2"), ord("B")]
+        assert widget.read_key() == "down"
+
+    def test_lone_escape_is_not_an_action(self, widget, screen):
+        screen.keys = [27]
+        assert widget.read_key() is None
+
+    def test_escape_followed_by_other_text_is_ignored(self, widget, screen):
+        screen.keys = [27, ord("x")]
+        assert widget.read_key() is None
