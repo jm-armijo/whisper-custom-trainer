@@ -2,8 +2,8 @@
 
 import pytest
 
-import whisper_pipeline as wp
 import export
+import whisper_pipeline as wp
 
 
 @pytest.fixture
@@ -22,7 +22,7 @@ def merged_model(tmp_path, monkeypatch):
 @pytest.fixture
 def captured_commands(monkeypatch):
     commands = []
-    monkeypatch.setattr(export, "run", lambda command: commands.append(command))
+    monkeypatch.setattr(export, "run", commands.append)
     return commands
 
 

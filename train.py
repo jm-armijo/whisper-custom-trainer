@@ -85,7 +85,7 @@ def build_lora_model():
 
 
 def build_trainer(model, dataset, processor, args):
-    from transformers import Seq2SeqTrainer, Seq2SeqTrainingArguments
+    from transformers import Seq2SeqTrainer
 
     return Seq2SeqTrainer(
         model=model,
@@ -126,7 +126,6 @@ class SpeechCollator:
     processor: object
 
     def __call__(self, examples):
-        import torch
 
         batch = self.processor.feature_extractor.pad(
             [{"input_features": item["input_features"]} for item in examples],

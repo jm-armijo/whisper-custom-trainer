@@ -5,17 +5,18 @@ about audio, CSV rows or the filesystem. The controller in record_data.py owns
 all of that and hands this class a plain view description to draw.
 """
 
+import contextlib
 import curses
 import locale
 import os
 import textwrap
 
-import recorder_state as rs
 import recorder_theme as rt
 
 IDLE = "idle"
 RECORDING = "recording"
 
+ESCAPE = 27              # the ESC byte introducing an arrow-key sequence
 ESCAPE_TIMEOUT_MS = 50   # bounds the wait for the tail of an escape sequence
 
 def _span(width):
@@ -97,10 +98,9 @@ class RecorderUI:
         if not curses.has_colors():
             return
         curses.start_color()
-        try:
+        # A terminal without default-colour support still gets pairs.
+        with contextlib.suppress(curses.error):
             curses.use_default_colors()
-        except curses.error:
-            pass  # A terminal without default-colour support still gets pairs.
         for index, name in enumerate(self.theme.names(), start=1):
             style = self.theme.style(name)
             try:
@@ -178,10 +178,8 @@ class RecorderUI:
 
     def _put(self, row, column, text, attribute):
         """addstr past the last cell raises; the final cell is never writable."""
-        try:
+        with contextlib.suppress(curses.error):
             self.stdscr.addstr(row, column, text, attribute)
-        except curses.error:
-            pass
 
     def read_key(self, timeout_ms=None):
         """Map a keypress to an action. Returns None when the timeout expires."""
@@ -191,7 +189,7 @@ class RecorderUI:
             return None
         if key == curses.KEY_RESIZE:
             return "resize"
-        if key == 27:
+        if key == ESCAPE:
             return self._read_escape(-1 if timeout_ms is None else int(timeout_ms))
         return KEY_ACTIONS.get(key)
 

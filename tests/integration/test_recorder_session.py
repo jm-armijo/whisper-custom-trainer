@@ -8,9 +8,7 @@ import pytest
 import record_data
 import recorder_state as rs
 import recorder_theme as rt
-import recorder_ui as ui
 import whisper_pipeline as wp
-
 from tests.integration.test_recorder_ui import StubScreen
 
 pytestmark = pytest.mark.integration

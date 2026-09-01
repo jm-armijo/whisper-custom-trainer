@@ -26,7 +26,9 @@ class TestLoadAudio:
         assert seconds == pytest.approx(2.0, abs=0.05)
 
     def test_raises_for_a_missing_file(self, tmp_path):
-        with pytest.raises(Exception):
+        # soundfile raises LibsndfileError, a RuntimeError subclass; asserting the
+        # public base keeps the test off a library-private type.
+        with pytest.raises(RuntimeError):
             wp.load_audio(tmp_path / "missing.wav")
 
 

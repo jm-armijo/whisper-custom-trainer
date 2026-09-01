@@ -190,7 +190,7 @@ class TestLineColouring:
 
     def test_line_numbers_are_one_based(self, screen, view, render, monkeypatch):
         render(view(), monkeypatch)
-        row, text = screen.row_of("alpha one")
+        _, text = screen.row_of("alpha one")
         assert "1" in text
 
 

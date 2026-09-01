@@ -7,6 +7,7 @@ exercise what the stub-screen tests cannot: that curses actually translates
 keystrokes and paints the screen.
 """
 
+import contextlib
 import os
 import pty
 import re
@@ -50,10 +51,8 @@ class RecorderProcess:
         """Read whatever is pending and reap the child if it has finished."""
         ready, _, _ = select.select([self.fd], [], [], POLL_SECONDS)
         if ready:
-            try:
+            with contextlib.suppress(OSError):
                 self.output += os.read(self.fd, 65536).decode(errors="replace")
-            except OSError:
-                pass
         if not self._exited:
             done, status = os.waitpid(self.pid, os.WNOHANG)
             if done:

@@ -127,7 +127,8 @@ class TestUpsertRow:
         rs.upsert_row(path, tmp_path / "a.wav", "uno", "es")
         rs.upsert_row(path, tmp_path / "b.wav", "dos", "es")
 
-        headers = [l for l in path.read_text().splitlines() if l.startswith("audio_path")]
+        lines = path.read_text().splitlines()
+        headers = [line for line in lines if line.startswith("audio_path")]
         assert len(headers) == 1
 
     def test_preserves_commas_and_accents(self, tmp_path):

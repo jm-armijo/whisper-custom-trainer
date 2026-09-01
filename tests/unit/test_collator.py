@@ -4,7 +4,6 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-import whisper_pipeline as wp
 
 START_TOKEN_ID = 50258
 

@@ -32,6 +32,7 @@ DEFAULTS = {
 }
 
 DEFAULT_BLINK_MS = 1000
+MAX_COLOUR_INDEX = 255   # xterm-256 palette ceiling for 'color:N' values
 
 COLOUR_NAMES = (
     "black", "red", "green", "yellow", "blue", "magenta", "cyan", "white",
@@ -71,8 +72,8 @@ def resolve_colour(value):
             index = int(value.removeprefix("color:"))
         except ValueError:
             raise wp.PipelineError(f"Invalid indexed colour: {value!r}") from None
-        if not 0 <= index <= 255:
-            raise wp.PipelineError(f"Colour index out of range 0-255: {value!r}")
+        if not 0 <= index <= MAX_COLOUR_INDEX:
+            raise wp.PipelineError(f"Colour index out of range 0-{MAX_COLOUR_INDEX}: {value!r}")
         return index
     if value in COLOUR_NAMES:
         return getattr(curses, f"COLOR_{value.upper()}")

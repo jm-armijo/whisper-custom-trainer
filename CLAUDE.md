@@ -27,7 +27,7 @@ python export.py --format all                 # ct2 | ggml | all -> ./exports
 python -m pytest                              # unit only (~1s) - the default tier
 python -m pytest -m integration               # real libs/converters (~30s)
 python -m pytest -m e2e                       # full pipeline to speech (~20s)
-python -m pytest -m "unit or integration or e2e"        # all 132
+python -m pytest -m "unit or integration or e2e"        # every tier (~4min)
 
 python -m pytest tests/unit/test_chunking.py -q         # single file
 python -m pytest -k test_masks_padding -m "unit or integration"   # single test
@@ -36,6 +36,35 @@ python -m pytest -k test_masks_padding -m "unit or integration"   # single test
 `pytest.ini` sets `addopts = -m "not integration and not e2e"`, so a bare `pytest` runs
 only the fast tier. Tier markers are applied by path in `tests/conftest.py` — a test is
 tagged by which of `tests/{unit,integration,e2e}/` it lives in, not by a decorator.
+
+### Lint and commit hooks
+
+`ruff` is the linter; its configuration lives in `pyproject.toml`.
+
+```bash
+ruff check .                                  # what the commit hook runs
+ruff check . --fix                            # apply the safe fixes
+```
+
+Hooks are managed by `lefthook` (`lefthook.yml`), installed by `setup.sh`:
+
+- **pre-commit** — `ruff`, the unit tier, the integration tier, and one e2e
+  happy case (`TestRecordingLifecycle`, ~70s total).
+- **pre-push** — the full suite (~7min).
+
+Two things are deliberately kept off pre-commit. `tests/e2e/test_pipeline.py`
+downloads `whisper-small` and trains an adapter, so a commit would block on a
+model download. The rest of `test_recorder_app.py` drives a pty in real time,
+including blink-interval timing that cannot be shortened without testing
+something other than what ships — the full file costs ~3min against ~20s for
+the single happy case that proves a take reaches disk.
+
+A few ruff rules are switched off per file rather than obeyed, because obeying
+them would break working code: `recorder_state.py` must hold its temp file open
+across the `fsync`/`os.replace` pair that makes the dataset write atomic
+(`SIM115`), and `export.run` inspects `returncode` itself to raise
+`PipelineError` naming the failed command (`PLW1510`). The reasons are recorded
+beside each ignore in `pyproject.toml`.
 
 ## Architecture
 

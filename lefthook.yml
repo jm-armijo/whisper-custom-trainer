@@ -1,0 +1,25 @@
+# Commit gate. Every command runs against the venv interpreter directly rather
+# than a bare `pytest`/`ruff`, so the hook works whether or not the venv is
+# activated in the shell that runs git.
+pre-commit:
+  parallel: false
+  commands:
+    lint:
+      glob: "*.py"
+      run: venv/bin/ruff check .
+    unit:
+      run: venv/bin/python -m pytest -q
+    integration:
+      run: venv/bin/python -m pytest -m integration -q
+    # One e2e happy case: record a take through a real pty and assert the wav
+    # and its dataset row land on disk (~20s). The rest of the e2e tier waits
+    # for pre-push - every case drives a pty in real time, so the full file
+    # costs ~3min and is too slow to pay on every commit.
+    e2e-happy-path:
+      run: venv/bin/python -m pytest "tests/e2e/test_recorder_app.py::TestRecordingLifecycle" -m e2e -q
+
+pre-push:
+  parallel: false
+  commands:
+    full-suite:
+      run: venv/bin/python -m pytest -m "unit or integration or e2e" -q

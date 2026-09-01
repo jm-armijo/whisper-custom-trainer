@@ -108,9 +108,9 @@ def upsert_row(csv_path, audio_path, text, language):
     rows = []
     if path.exists():
         with path.open(newline="", encoding="utf8") as handle:
-            rows = [row for row in csv.DictReader(handle)]
+            rows = list(csv.DictReader(handle))
 
-    replacement = dict(zip(wp.CSV_COLUMNS, (target, text, language)))
+    replacement = dict(zip(wp.CSV_COLUMNS, (target, text, language), strict=True))
     for position, row in enumerate(rows):
         if _key(row["audio_path"]) == _key(target):
             rows[position] = replacement
