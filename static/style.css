@@ -1,0 +1,386 @@
+/* Dark-first recorder skin.
+ *
+ * The status colours are the terminal palette from recorder_theme.json,
+ * resolved to the xterm ANSI values so a line reads the same green/yellow on
+ * the phone as it does in curses. Only this file turns a status name into a
+ * colour - state.js never emits one. */
+
+:root {
+  color-scheme: dark;
+
+  --ansi-green: #26a269;
+  --ansi-green-bright: #33d17a;
+  --ansi-yellow: #e5a50a;
+  --ansi-red: #e01b24;
+  --ansi-blue: #62a0ea;
+  --ansi-white: #d0cfcc;
+
+  --bg: #14161a;
+  --bg-raised: #1c1f25;
+  --bg-sunken: #101216;
+  --border: #2b3039;
+  --text: var(--ansi-white);
+  --text-dim: #8b8f97;
+
+  /* recorder_theme.json, style by style. */
+  --recorded: var(--ansi-green);
+  --selected: var(--ansi-yellow);
+  --recorded-selected: var(--ansi-green-bright);
+  --pending: var(--ansi-white);
+  --record-dot: var(--ansi-red);
+  --title-fg: var(--ansi-blue);
+  --message-fg: var(--ansi-yellow);
+  --status-idle-bg: var(--ansi-white);
+  --status-idle-fg: #101216;
+  --status-recording-bg: var(--ansi-red);
+  --status-recording-fg: #14161a;
+
+  --tap-target: 46px;
+  --font-ui: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-read: Georgia, "Iowan Old Style", "Noto Serif", serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-ui);
+  /* Fill the viewport exactly so only the chunk list scrolls; on Android the
+   * dynamic toolbar makes 100vh overshoot, hence dvh. */
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  -webkit-text-size-adjust: 100%;
+}
+
+/* ---------- title bar ---------- */
+
+.titlebar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  padding-top: max(0.5rem, env(safe-area-inset-top));
+  background: var(--bg-sunken);
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+
+.title {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--title-fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.menu-toggle {
+  min-width: var(--tap-target);
+  min-height: var(--tap-target);
+  font-size: 1.25rem;
+  line-height: 1;
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+/* ---------- layout ---------- */
+
+.layout {
+  flex: 1 1 auto;
+  display: flex;
+  min-height: 0;
+  position: relative;
+}
+
+.sidebar {
+  background: var(--bg-sunken);
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+  flex: 0 0 240px;
+  padding: 0.75rem;
+}
+
+/* Desktop: the menu is open by default and the toggle collapses it away.
+ * Phones invert this below - there the class is what opens the overlay. */
+.sidebar.is-collapsed {
+  display: none;
+}
+
+.sidebar-heading {
+  margin: 0 0 0.5rem;
+  font-size: 0.7rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.script-menu {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.script {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  width: 100%;
+  min-height: var(--tap-target);
+  padding: 0.5rem 0.6rem;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.script:hover {
+  background: var(--bg-raised);
+}
+
+.script.is-active {
+  background: var(--bg-raised);
+  border-color: var(--title-fg);
+}
+
+.script.is-complete .script-progress {
+  color: var(--recorded);
+}
+
+.script-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.script-progress {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.8rem;
+  color: var(--text-dim);
+}
+
+/* ---------- chunk list ---------- */
+
+.main {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  display: flex;
+}
+
+.chunk-list {
+  list-style: none;
+  margin: 0;
+  padding: 0.5rem 0.5rem 40vh;
+  overflow-y: auto;
+  flex: 1 1 auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.chunk {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.55rem 0.5rem;
+  border-radius: 8px;
+  border-left: 3px solid transparent;
+  cursor: pointer;
+  scroll-margin: 25vh;
+}
+
+.chunk-gutter {
+  flex: 0 0 auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8rem;
+  white-space: pre;
+  color: var(--text-dim);
+  padding-top: 0.15rem;
+}
+
+.chunk-text {
+  font-family: var(--font-read);
+  font-size: 1.05rem;
+  line-height: 1.5;
+}
+
+/* The four statuses of recorder_state.chunk_statuses. "recorded_selected" is
+ * deliberately distinct from "selected": a finished line under the cursor must
+ * not still say "read this next". */
+.chunk--pending {
+  color: var(--pending);
+}
+
+.chunk--recorded {
+  color: var(--recorded);
+}
+
+.chunk--selected {
+  color: var(--selected);
+  font-weight: 700;
+  background: var(--bg-raised);
+  border-left-color: var(--selected);
+}
+
+.chunk--recorded_selected {
+  color: var(--recorded-selected);
+  font-weight: 700;
+  background: var(--bg-raised);
+  border-left-color: var(--recorded-selected);
+}
+
+/* ---------- footer: message, status bar, controls ---------- */
+
+.footer {
+  flex: 0 0 auto;
+  background: var(--bg-sunken);
+  border-top: 1px solid var(--border);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+.message {
+  margin: 0;
+  padding: 0 0.75rem;
+  min-height: 1.4rem;
+  font-size: 0.8rem;
+  color: var(--message-fg);
+}
+
+.status-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.35rem 0.75rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  background: var(--status-idle-bg);
+  color: var(--status-idle-fg);
+}
+
+.status-bar.is-recording {
+  background: var(--status-recording-bg);
+  color: var(--status-recording-fg);
+}
+
+/* No CSS animation: the glyph is swapped by the controller's blink timer, the
+ * same mechanism the curses view uses, so the dot and the clock stay in step. */
+.record-dot {
+  font-size: 0.9rem;
+  line-height: 1;
+}
+
+.record-timer {
+  font-variant-numeric: tabular-nums;
+}
+
+.status-legend {
+  margin-left: auto;
+  font-weight: 400;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.controls {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 0.4rem;
+  padding: 0.6rem 0.75rem;
+}
+
+.control {
+  min-height: var(--tap-target);
+  padding: 0.5rem 0.25rem;
+  background: var(--bg-raised);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.control:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.control--record {
+  background: var(--recorded);
+  border-color: var(--recorded);
+  color: #06120c;
+}
+
+.control--record.is-recording {
+  background: var(--record-dot);
+  border-color: var(--record-dot);
+  color: #fff;
+}
+
+/* ---------- phone ---------- */
+
+@media (max-width: 40rem) {
+  /* The menu overlays rather than squeezing the reading column, which is the
+   * only thing worth the width on a phone. */
+  .sidebar {
+    position: absolute;
+    inset: 0 auto 0 0;
+    z-index: 10;
+    width: min(80vw, 300px);
+    flex-basis: auto;
+    transform: translateX(-100%);
+    transition: transform 0.18s ease-out;
+  }
+
+  .sidebar.is-open {
+    transform: translateX(0);
+    box-shadow: 0 0 0 100vmax rgb(0 0 0 / 50%);
+  }
+
+  /* On a phone the drawer starts closed, so the desktop collapse class must
+   * not also hide it - is-open alone decides. */
+  .sidebar.is-collapsed {
+    display: block;
+  }
+
+  .chunk-text {
+    font-size: 1.15rem;
+  }
+
+  .controls {
+    grid-template-columns: repeat(3, 1fr);
+  }
+
+  .control--record {
+    grid-column: span 3;
+    order: -1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar {
+    transition: none;
+  }
+}

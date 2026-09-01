@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark" />
+    <title>Whisper Recorder</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <header class="titlebar">
+      <button
+        id="menu-toggle"
+        class="menu-toggle"
+        type="button"
+        aria-expanded="false"
+        aria-controls="sidebar"
+        aria-label="Toggle script menu"
+      >
+        ☰
+      </button>
+      <h1 id="title" class="title">loading…</h1>
+    </header>
+
+    <div class="layout">
+      <nav id="sidebar" class="sidebar" aria-label="Scripts">
+        <h2 class="sidebar-heading">Scripts</h2>
+        <ul id="script-menu" class="script-menu"></ul>
+      </nav>
+
+      <main class="main">
+        <ol id="chunk-list" class="chunk-list" aria-label="Script chunks"></ol>
+      </main>
+    </div>
+
+    <footer class="footer">
+      <p id="message" class="message" role="status" aria-live="polite"></p>
+
+      <div id="status-bar" class="status-bar">
+        <span id="record-dot" class="record-dot" hidden></span>
+        <span id="status-state" class="status-state">IDLE</span>
+        <span id="record-timer" class="record-timer"></span>
+        <span id="status-legend" class="status-legend"></span>
+      </div>
+
+      <div class="controls">
+        <button id="btn-prev" class="control" type="button">Prev</button>
+        <button id="btn-record" class="control control--record" type="button">Record</button>
+        <button id="btn-next" class="control" type="button">Next</button>
+        <button id="btn-redo" class="control" type="button">Redo</button>
+        <button id="btn-play" class="control" type="button">Play</button>
+      </div>
+    </footer>
+
+    <script type="module" src="/static/app.js"></script>
+  </body>
+</html>
