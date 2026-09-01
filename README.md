@@ -12,15 +12,17 @@ Runs locally on Apple Silicon (Metal / MPS).
 ./setup.sh                                          # venv + dependencies + repos
 source venv/bin/activate
 
-python record_data.py --text script_es.txt --lang es   # read prompts aloud
-python record_data.py --text script_en.txt --lang en
+python record_data.py --text scripts/es.txt --lang es   # read prompts aloud
+python record_data.py --text scripts/en.txt --lang en
 
 python train.py                                     # LoRA adapter
 python merge.py                                     # portable master model
 ./convert.sh                                        # export + install
 ```
 
-Supply your own `script_*.txt`: any prose you are comfortable reading. It is
+Supply your own `scripts/*.txt`: any prose you are comfortable reading. Name the
+file for its language — `es.txt`, `en.txt` — and the web recorder can infer it
+too. It is
 split automatically into 10-25 word chunks at sentence ends, blank lines, and —
 for a sentence too long to fit — the last comma or similar pause in range, so a
 line rarely ends mid-clause. Leave a blank line between paragraphs and they will
@@ -104,24 +106,49 @@ Colours and the blink interval live in `recorder_theme.json`:
 Any of the eight terminal colour names, `"default"`, or `"color:N"` for a
 256-colour index. `--theme other.json` selects a different file.
 
-## Running on DietPi / Docker
+## The web recorder
 
-The web recorder runs in a container on a home server (DietPi, Raspberry Pi, any
-Debian-ish box) so you can record from a phone browser on the LAN. The container
-**records only** — training stays on the laptop, so torch, transformers and
-datasets are not installed and the image is roughly **400-500 MB**, not 2 GB.
-The base is `python:3.12-slim`, a multi-arch manifest, so it builds on arm64
-unchanged.
+A second front end onto the same dataset: a browser page instead of curses, so a
+phone can record while the box sits in a cupboard. It is stdlib-only — no web
+framework — and shares every rule with the terminal recorder.
+
+> **New, and not yet verified in a real browser.** The server, its API and the
+> dataset writes are tested; the page itself has not been driven on real
+> hardware. Do one manual `docker compose up` and one browser load before
+> trusting it with a recording session.
+
+### Running it
+
+**On the laptop**, against the working tree:
+
+```bash
+venv/bin/python recorder_server.py                    # http://0.0.0.0:8080
+venv/bin/python recorder_server.py --port 9000        # anything is overridable
+```
+
+With no flags it reads `scripts/`, writes clips to `data/` and rows to
+`dataset.csv` — the same three paths `record_data.py` uses, which is what lets
+the two front ends share one dataset.
+
+**On the DietPi box**, in Docker. The container **records only** — training stays
+on the laptop, so torch, transformers and datasets are not installed and the
+image is roughly **400-500 MB**, not 2 GB. The base is `python:3.12-slim`, a
+multi-arch manifest, so it builds on arm64 unchanged.
 
 ```bash
 touch dataset.csv          # bind-mounted as a file; Docker would otherwise
 mkdir -p data scripts      # create a directory here and every CSV write fails
 
 docker compose up -d --build
-docker compose logs -f     # watch requests arrive
+docker compose logs -f     # one line per request
 ```
 
-Then open `http://<box-ip>:8080` on the phone — but read the next section first,
+That first line is not optional and not cosmetic: a bind mount whose host side
+is missing is created by Docker as a **directory**, and every subsequent CSV
+write then fails with `EISDIR`.
+
+Then open `http://<box-ip>:8080` on the phone — but read
+[the secure-context section](#the-microphone-needs-a-secure-context) first,
 because the microphone will not work over plain HTTP.
 
 | Host path | In container | Why |
@@ -131,9 +158,62 @@ because the microphone will not work over plain HTTP.
 | `./dataset.csv` | `/data/dataset.csv` | the dataset rows |
 
 All three are bind mounts, so takes survive `docker compose down` and a rebuild.
-Copy `data/` and `dataset.csv` back to the laptop (`rsync -a`) when it is time to
-train. Override the published port with `RECORDER_PORT`, and the file ownership
-with `RECORDER_UID` / `RECORDER_GID` if your DietPi user is not `1000:1000`.
+
+### Configuration
+
+Every knob, and there are only six. The server takes flags; two of them fall
+back to an environment variable, and the rest are set by the container's `CMD`:
+
+| Flag | Env var | Default | What it decides |
+|---|---|---|---|
+| `--host` | `RECORDER_HOST` | `0.0.0.0` | which interfaces to listen on — see below |
+| `--port` | `RECORDER_PORT` | `8080` | the listening port |
+| `--scripts` | — | `./scripts` | directory of `*.txt` reading material |
+| `--csv` | — | `./dataset.csv` | the dataset rows |
+| `--out-dir` | — | `./data` | where `.wav` takes are written |
+| `--static` | — | `./static` | the browser assets |
+
+Those four defaults resolve against the **project root** — where the modules
+live, not the directory you happen to launch from — so running the server from
+anywhere still finds the same dataset.
+
+Only `--host` and `--port` read the environment directly. `RECORDER_SCRIPTS_DIR`,
+`RECORDER_CSV` and `RECORDER_OUT_DIR` exist in the **Dockerfile** only, where the
+`CMD` expands them into the matching flags — so they configure the container, not
+the script. (The flag is `--scripts`, not `--scripts-dir`; the Dockerfile passing
+the latter is what made an early image exit at startup.)
+
+Two more variables belong to `docker-compose.yml` rather than the server:
+`RECORDER_PORT` also picks the **published** port on the host, and
+`RECORDER_UID` / `RECORDER_GID` (default `1000:1000`) set the ownership of the
+files it writes. Match them to your DietPi user, or the takes come back owned by
+someone the laptop cannot read.
+
+A script's **language comes from its filename**: `scripts/es.txt` records as
+Spanish, `en.txt` as English. Any other stem is listed in the picker but cannot
+be recorded, because a mislabelled row poisons the bilingual adapter.
+
+### Reaching the box from the phone
+
+`--host` is the whole story. The default `0.0.0.0` listens on every interface,
+which is what makes the box reachable at its LAN address. Binding it to
+`127.0.0.1` accepts only connections from the box itself — the page will be
+unreachable from the phone, and inside Docker the published port would answer
+nothing at all. Use loopback only when you are browsing from the same machine.
+
+Find the address to type:
+
+```bash
+hostname -I | awk '{print $1}'      # on the DietPi box
+ipconfig getifaddr en0              # on macOS
+```
+
+Give the box a **DHCP reservation** while you are in the router. The address ends
+up in a browser flag below, and a lease change would silently break recording.
+
+To record away from home, put the box on a [Tailscale](https://tailscale.com)
+tailnet and reach it by its `*.ts.net` name — which also solves the certificate
+problem in the next section outright.
 
 ### The microphone needs a secure context
 
@@ -155,8 +235,9 @@ add the exact origin — scheme, IP and port, no trailing slash:
 http://192.168.1.50:8080
 ```
 
-Relaunch the browser. This is per-device and per-origin, so it survives until the
-box changes IP — give it a DHCP reservation. iOS Safari has no equivalent flag.
+Relaunch the browser. This is per-device and per-origin, so it lasts exactly as
+long as the box keeps that address — hence the DHCP reservation above. iOS
+Safari has no equivalent flag.
 
 **2. A hostname with real HTTPS** (best if you already run Tailscale)
 
@@ -180,6 +261,59 @@ Settings. It works, but option 1 or 2 is less trouble.
 
 The container itself always speaks plain HTTP — TLS belongs in front of it, not
 in a stdlib `http.server`.
+
+### Recording from two devices
+
+The phone and the laptop write into **one dataset**, and nothing synchronises
+them, because there is nothing to synchronise. A chunk's clip filename is
+derived, not allocated: line `n` of a Spanish script is always
+`{lang}_{index:05d}.wav` — `es_00042.wav` — whichever front end recorded it. So
+`dataset.csv` is a projection of the audio directory over the script rather than
+a database of its own, and re-reading a line simply overwrites its one file.
+That is also why deleting a `.wav` re-opens the line in both UIs.
+
+The practical loop: record on the phone against the container, then bring the
+takes home before training.
+
+```bash
+rsync -a dietpi:my-whisper/data/ data/       # the clips
+rsync -a dietpi:my-whisper/dataset.csv .     # the rows
+python train.py
+```
+
+Record on the laptop with either front end — `record_data.py` for the curses TUI,
+or `recorder_server.py` if you prefer the browser. Both land on the same files.
+Keep one machine authoritative for a given script while a session is in progress:
+two people reading the same line at once is the one case the derived filename
+cannot arbitrate, since the second take simply wins.
+
+### The API
+
+Six endpoints, all JSON except the audio. Useful for scripting a session or
+checking progress without a browser:
+
+| Endpoint | Does |
+|---|---|
+| `GET /api/scripts` | every script with its recorded / total counts |
+| `GET /api/scripts/{name}` | one script's chunks, each flagged recorded or not |
+| `POST /api/scripts/{name}/chunks/{index}` | upload a take for one line |
+| `DELETE /api/scripts/{name}/chunks/{index}` | drop the take, re-opening the line |
+| `GET /api/scripts/{name}/chunks/{index}/audio` | the stored `.wav`, for playback |
+
+`POST` accepts the blob raw or as a multipart `audio` field, so `curl` and the
+browser's `FormData` both work. Anything `libsndfile` cannot open is decoded
+through `ffmpeg`, which is what covers the WebM/Opus that `MediaRecorder`
+actually produces. A take shorter than the minimum is rejected **before** the
+dataset is touched, so a bad upload cannot clobber a good take on that line.
+
+```bash
+curl -s localhost:8080/api/scripts
+curl -s -X POST --data-binary @take.wav \
+    localhost:8080/api/scripts/es.txt/chunks/0
+```
+
+Errors come back as `{"message": "..."}` — 404 when something does not exist,
+400 when the request was wrong.
 
 ## Tests
 
@@ -220,6 +354,10 @@ padding mask, the LoRA targets, or the tokenizer restore each fails a test.
 | `recorder_ui.py` | Full-screen curses view (no audio or file knowledge) |
 | `recorder_state.py` | Which chunks are recorded, and where the cursor sits |
 | `recorder_theme.py` | Loads and validates `recorder_theme.json` |
+| `recorder_server.py` | Web recorder: routing, uploads, audio decoding |
+| `recorder_scripts.py` | Script discovery, language inference, per-script progress |
+| `static/` | Browser page for the web recorder |
+| `Dockerfile`, `docker-compose.yml` | Recording-only container for the DietPi box |
 | `train.py` | Bilingual LoRA training |
 | `merge.py` | Folds adapter into the portable master model |
 | `export.py` | Master model to CT2 / ggml |
