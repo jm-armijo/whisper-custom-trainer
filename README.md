@@ -159,12 +159,11 @@ because the microphone will not work over plain HTTP.
 
 All three are bind mounts, so takes survive `docker compose down` and a rebuild.
 
-### Configuration
+### Flags and environment variables
 
-Every knob, and there are only six. The server takes flags; two of them fall
-back to an environment variable, and the rest are set by the container's `CMD`:
+`recorder_server.py --help`, with the defaults spelled out:
 
-| Flag | Env var | Default | What it decides |
+| Flag | Env var | Default | Sets |
 |---|---|---|---|
 | `--host` | `RECORDER_HOST` | `0.0.0.0` | which interfaces to listen on — see below |
 | `--port` | `RECORDER_PORT` | `8080` | the listening port |

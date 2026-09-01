@@ -6,6 +6,8 @@ whisper.cpp/
 # Recorded audio is large and personal
 data/
 dataset.csv
+# recorder_state.dataset_lock's sidecar, one per dataset
+dataset.csv.lock
 
 # Model artifacts are regenerable from dataset.csv
 custom-lora-adapter/
