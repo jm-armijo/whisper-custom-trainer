@@ -53,6 +53,6 @@ ENV PYTHONUNBUFFERED=1
 CMD ["sh", "-c", "exec python recorder_server.py \
     --host \"$RECORDER_HOST\" \
     --port \"$RECORDER_PORT\" \
-    --scripts-dir \"$RECORDER_SCRIPTS_DIR\" \
+    --scripts \"$RECORDER_SCRIPTS_DIR\" \
     --out-dir \"$RECORDER_OUT_DIR\" \
     --csv \"$RECORDER_CSV\""]

@@ -9,6 +9,7 @@ ct2-transformers-converter).
 """
 
 import ast
+import re
 import shutil
 import subprocess
 
@@ -153,6 +154,32 @@ class TestImageStaysSmall:
                 assert not any(line.startswith((f"import {package}", f"from {package}"))
                                for line in top_level), f"{module} imports {package} at module scope"
 
+    def test_the_start_command_only_passes_flags_the_server_accepts(self, dockerfile):
+        """A flag the parser does not define kills the container on startup.
+
+        The Dockerfile and recorder_server.py were written separately, and the
+        CMD shipped `--scripts-dir` against a parser defining `--scripts`:
+        `docker compose up` exited immediately on 'unrecognized arguments'
+        while the image built and pushed perfectly happily.
+        """
+        if not (wp.PROJECT_ROOT / f"{SERVER_MODULE}.py").exists():
+            pytest.skip(f"{SERVER_MODULE}.py does not exist yet; cannot read its flags")
+
+        # The CMD spans several backslash-continued lines, so continuations are
+        # folded first; scanning line by line would see only `exec python ...`.
+        folded = re.sub(r"\\\s*\n\s*", " ", dockerfile)
+        command = "\n".join(line for line in folded.splitlines()
+                            if line.startswith(("CMD", "ENTRYPOINT")))
+        passed = set(re.findall(r"--[a-z][a-z-]*", command))
+        assert passed, "the image must start the server with explicit flags"
+
+        source = (wp.PROJECT_ROOT / f"{SERVER_MODULE}.py").read_text()
+        defined = set(re.findall(r"add_argument\(\s*[\"'](--[a-z][a-z-]*)[\"']", source))
+        assert defined, "could not read the server's argument parser"
+
+        unknown = passed - defined
+        assert not unknown, f"CMD passes flags the server rejects: {sorted(unknown)}"
+
     def test_excludes_the_heavy_directories_from_the_build_context(self):
         """The context is uploaded before the first layer; venv/ and models are GBs."""
         ignored = DOCKERIGNORE.read_text()
@@ -197,8 +224,16 @@ class TestPersistence:
         assert "./scripts:/data/scripts:ro" in compose
 
     def test_passes_every_path_to_the_server(self, dockerfile):
-        for flag in ("--scripts-dir", "--out-dir", "--csv", "--host", "--port"):
-            assert flag in dockerfile
+        """Each mount must reach the server, addressed by the env var it reads.
+
+        Asserted through the RECORDER_* variables rather than the flag names:
+        hardcoding a spelling here is what let `--scripts-dir` pass this test
+        while the server's parser only ever defined `--scripts`. The companion
+        test above checks the spellings against the parser itself.
+        """
+        for variable in ("RECORDER_SCRIPTS_DIR", "RECORDER_OUT_DIR", "RECORDER_CSV",
+                         "RECORDER_HOST", "RECORDER_PORT"):
+            assert variable in dockerfile
 
 
 class TestComposeIsValid:
