@@ -12,7 +12,7 @@ def main():
     args = parse_arguments()
     processor = wp.build_processor()
 
-    dataset = load_examples(args.csv, processor)
+    dataset = load_examples(args.csv, processor, args.audio_dir)
     model = build_lora_model()
     trainer = build_trainer(model, dataset, processor, args)
 
@@ -26,13 +26,16 @@ def main():
 def parse_arguments():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--csv", default=str(wp.DATASET_CSV))
+    # Rows name a clip by filename, so where the clips live is a choice this
+    # machine makes rather than one baked into the dataset by the recorder.
+    parser.add_argument("--audio-dir", type=Path, default=wp.AUDIO_DIR)
     parser.add_argument("--epochs", type=float, default=8.0)
     parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--learning-rate", type=float, default=1e-3)
     return parser.parse_args()
 
 
-def load_examples(csv_path, processor):
+def load_examples(csv_path, processor, audio_dir=None):
     """Read the CSV and encode each row into features and labels."""
     from datasets import load_dataset
 
@@ -43,15 +46,22 @@ def load_examples(csv_path, processor):
     # decode an Audio column, so wp.load_audio handles decoding instead.
     dataset = load_dataset("csv", data_files=str(csv_path), split="train")
     return dataset.map(
-        lambda row: encode_example(row, processor),
+        lambda row: encode_example(row, processor, audio_dir),
         remove_columns=dataset.column_names,
         desc="Encoding audio",
     )
 
 
-def encode_example(row, processor):
-    """Encode one row, tagging labels with that row's own language token."""
-    samples = wp.load_audio(row["audio_path"])
+def encode_example(row, processor, audio_dir=None):
+    """Encode one row, tagging labels with that row's own language token.
+
+    The row names a clip by filename, so it is resolved against this machine's
+    audio directory: a dataset recorded in the container references paths that
+    exist only there.
+    """
+    samples = wp.load_audio(
+        wp.resolve_audio_path(row["audio_path"], audio_dir or wp.AUDIO_DIR)
+    )
     features = processor.feature_extractor(samples, sampling_rate=wp.SAMPLE_RATE)
 
     # Set per row so a single adapter learns both languages with the correct

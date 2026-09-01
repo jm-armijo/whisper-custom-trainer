@@ -70,10 +70,16 @@ class TestEncodeExample:
         row = {"audio_path": "a.wav", "text": "hola", "language": "es"}
         assert encode(row, processor)["input_features"] == [0.0, 1.0]
 
-    def test_decodes_the_row_audio_path(self, monkeypatch, processor):
+    def test_resolves_the_row_against_this_machines_audio_dir(self, monkeypatch, processor):
+        """A row names a clip by filename so the dataset survives an rsync from
+        the container; where that clip lives is this run's choice."""
         seen = {}
         monkeypatch.setattr(wp, "load_audio", lambda path: seen.setdefault("path", path) or [0.0])
         from train import encode_example
 
-        encode_example({"audio_path": "clip.wav", "text": "hi", "language": "en"}, processor)
-        assert seen["path"] == "clip.wav"
+        encode_example(
+            {"audio_path": "clip.wav", "text": "hi", "language": "en"},
+            processor,
+            audio_dir="/somewhere/data",
+        )
+        assert str(seen["path"]) == "/somewhere/data/clip.wav"

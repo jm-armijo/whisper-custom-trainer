@@ -103,9 +103,14 @@ def _status(is_recorded, is_cursor):
 
 
 def _key(audio_path):
-    """Compare clips by resolved path so an absolute and a relative reference
-    to the same file are one row, not two."""
-    return str(Path(audio_path).resolve())
+    """Compare clips by filename, so a row written on another machine and one
+    written here name the same clip rather than becoming two rows.
+
+    Every clip lives directly in one audio directory, so the filename already
+    identifies it uniquely; comparing resolved paths instead would split a
+    dataset the moment it moved between the container and the laptop.
+    """
+    return wp.dataset_audio_path(audio_path)
 
 
 def prune_missing(csv_path, audio_dir):
@@ -121,7 +126,10 @@ def prune_missing(csv_path, audio_dir):
             return 0
 
         rows = _read_rows(path)
-        kept = [row for row in rows if Path(row["audio_path"]).exists()]
+        kept = [
+            row for row in rows
+            if wp.resolve_audio_path(row["audio_path"], audio_dir).exists()
+        ]
         removed = len(rows) - len(kept)
         if removed:
             _write_rows(path, kept)
@@ -138,7 +146,7 @@ def upsert_row(csv_path, audio_path, text, language):
     read the same 'before' image and overwrite this one's row.
     """
     path = Path(csv_path)
-    target = str(Path(audio_path).resolve())
+    target = wp.dataset_audio_path(audio_path)
 
     with dataset_lock(path):
         rows = _read_rows(path) if path.exists() else []

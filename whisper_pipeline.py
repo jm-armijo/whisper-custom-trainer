@@ -48,6 +48,33 @@ class PipelineError(RuntimeError):
     """Raised with an actionable message when a pipeline precondition fails."""
 
 
+def dataset_audio_path(audio_path):
+    """How a clip is named in dataset.csv: its filename, nothing more.
+
+    An absolute path pins the dataset to the machine that recorded it. The
+    container writes /data/audio/es_00000.wav, and the documented workflow
+    rsyncs the clips and the CSV to the laptop, where that directory does not
+    exist: train.py could not load a single row, and record_data.py's startup
+    prune deleted every one of them as a clip gone missing.
+
+    The filename is enough because every clip lives directly in one audio
+    directory - recorder_state.clip_path is the only thing that names one - and
+    that directory is already a configured value on both front ends.
+    """
+    return Path(audio_path).name
+
+
+def resolve_audio_path(audio_path, audio_dir):
+    """The clip a dataset row refers to, on this machine.
+
+    An absolute path is honoured as written so datasets recorded before
+    filenames were stored keep loading; anything else resolves against the
+    audio directory this run was told to use.
+    """
+    stored = Path(audio_path)
+    return stored if stored.is_absolute() else Path(audio_dir) / stored
+
+
 # A break in range of the maximum is preferred over cutting mid-clause, but one
 # in the first few words would leave a stub line, so only the tail is searched.
 NATURAL_BREAKS = ",;:—–"

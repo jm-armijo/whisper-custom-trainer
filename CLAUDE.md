@@ -108,6 +108,25 @@ logic, mirroring how `whisper_pipeline.py` isolates third-party quirks:
   over defaults and validated at startup.
 - `record_data.py` — the controller joining those to the microphone.
 
+Every dataset write goes through `recorder_state.dataset_lock`, an **flock on a
+sidecar `dataset.csv.lock`**. `upsert_row` and `prune_missing` are both
+read-modify-write over the whole file, and the writers are separate processes:
+the curses recorder and `recorder_server.py` can be recording into one dataset
+at once, so a `threading.Lock` would not see the other side. The lock is on a
+sidecar rather than the CSV because `_write_rows` replaces that inode on every
+write.
+
+### Portable dataset rows
+
+`audio_path` holds a **bare filename**, not an absolute path
+(`wp.dataset_audio_path` writes it, `wp.resolve_audio_path` reads it back
+against the audio dir this run was told to use). The container records into
+`/data/audio`, and the documented rsync moves those rows to a laptop where that
+directory does not exist: absolute paths made `train.py` unable to load a single
+row, and `record_data.py`'s startup `prune_missing` deleted every one of them as
+a clip gone missing. `resolve_audio_path` still honours an absolute path as
+written, so datasets recorded before this keep loading.
+
 Two constraints worth keeping: the record dot blinks by **redrawing on a timer**
 (`curses.A_BLINK` is ignored by most modern terminals), which is why the input
 loop is non-blocking; and `read_key` decodes **raw `ESC [ A` sequences** as well
