@@ -35,6 +35,12 @@ import whisper_pipeline as wp
 
 STATIC_DIR = wp.PROJECT_ROOT / "static"
 SCRIPTS_DIR = wp.PROJECT_ROOT / "scripts"
+
+# index.html addresses its stylesheet and modules as /static/<name>, which keeps
+# every asset in one namespace that cannot collide with /api/ or with a script
+# name. SimpleHTTPRequestHandler resolves paths against static_dir as its
+# document root, so the prefix is stripped before it runs.
+STATIC_PREFIX = "/static/"
 DEFAULT_PORT = 8080
 
 # 0.0.0.0 by default: the recorder is useless unless the phone can reach it,
@@ -437,6 +443,12 @@ class RecorderHandler(SimpleHTTPRequestHandler):
         if not Path(self.config.static_dir).is_dir():
             self._error(HTTPStatus.NOT_FOUND, "No web assets are installed.")
             return
+
+        if self.path.startswith(STATIC_PREFIX):
+            # translate_path resolves against static_dir, and it also normalises
+            # away any ../ in the request, so stripping the prefix cannot be
+            # used to reach outside the asset directory.
+            self.path = self.path[len(STATIC_PREFIX) - 1:]
         super().do_GET()
 
     def _send_json(self, status, payload):

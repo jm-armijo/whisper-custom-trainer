@@ -9,6 +9,7 @@ enough to be worth more than a mocked handler.
 import csv
 import io
 import json
+import re
 import threading
 import urllib.error
 import urllib.request
@@ -69,6 +70,34 @@ def server(tmp_path):
 
     try:
         yield Live()
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=5)
+
+
+@pytest.fixture
+def real_assets_server(tmp_path):
+    """A live server serving the assets that actually ship in static/.
+
+    The fixture that writes its own index.html proves only that the fixture is
+    self-consistent; serving the real page is what catches an asset URL the
+    page requests and the server does not answer.
+    """
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+
+    config = srv.Config(
+        scripts_dir=scripts,
+        csv_path=tmp_path / "dataset.csv",
+        audio_dir=tmp_path / "data",
+        static_dir=srv.STATIC_DIR,
+    )
+    httpd = srv.build_server(config, host="127.0.0.1", port=0)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{httpd.server_address[1]}"
     finally:
         httpd.shutdown()
         httpd.server_close()
@@ -337,13 +366,6 @@ class TestStaticAssets:
         status, payload = call(f"{server.base}/")
         assert status == 200 and b"recorder" in payload
 
-    def test_serves_a_named_asset(self, server):
-        server.static.mkdir()
-        (server.static / "app.js").write_text("export const x = 1;", encoding="utf8")
-
-        status, payload = call(f"{server.base}/app.js")
-        assert status == 200 and b"export const x" in payload
-
     def test_an_absent_static_directory_is_a_404_not_a_crash(self, server):
         """The frontend is deployed separately; a missing static/ must not stop
         the API from serving."""
@@ -356,3 +378,63 @@ class TestStaticAssets:
     def test_an_unknown_api_endpoint_is_a_404(self, server):
         status, _ = call(f"{server.base}/api/nothing")
         assert status == 404
+
+
+# href="..." / src="..." on the served page, ignoring anything off-site.
+ASSET_REFERENCE = re.compile(r'(?:href|src)="([^"]+)"')
+
+
+def page_asset_urls(markup):
+    return [
+        reference
+        for reference in ASSET_REFERENCE.findall(markup)
+        if not reference.startswith(("http://", "https://", "//", "data:", "#"))
+    ]
+
+
+class TestTheRealPageLoads:
+    """Every URL the shipped index.html requests must actually be served.
+
+    Asserting the spelling of an asset URL inside index.html proves only that
+    the file says what it says. The page and the server disagreed about the
+    /static/ prefix for exactly that reason: the page 200'd while every script
+    and stylesheet on it 404'd, so the recorder was blank in a browser while
+    the suite was green.
+    """
+
+    def test_the_page_is_served(self, real_assets_server):
+        status, payload = call(f"{real_assets_server}/")
+        assert status == 200 and b"<title>" in payload
+
+    def test_the_page_references_assets_at_all(self, real_assets_server):
+        markup = call(f"{real_assets_server}/")[1].decode("utf8")
+        assert page_asset_urls(markup), "index.html should load a stylesheet and a module"
+
+    def test_every_asset_the_page_requests_is_served(self, real_assets_server):
+        markup = call(f"{real_assets_server}/")[1].decode("utf8")
+
+        broken = [
+            url for url in page_asset_urls(markup)
+            if call(f"{real_assets_server}{url}")[0] != 200
+        ]
+        assert broken == []
+
+    def test_the_static_prefix_cannot_be_walked_out_of(self, real_assets_server):
+        """Stripping /static/ must not turn ../ into a way out of the asset dir."""
+        status, _ = call(f"{real_assets_server}/static/../recorder_server.py")
+        assert status == 404
+
+    def test_every_module_the_entry_imports_is_served(self, real_assets_server):
+        """The page names only app.js; its own imports are fetched next."""
+        entry = [url for url in page_asset_urls(
+            call(f"{real_assets_server}/")[1].decode("utf8")
+        ) if url.endswith(".js")]
+
+        broken = []
+        for url in entry:
+            source = call(f"{real_assets_server}{url}")[1].decode("utf8")
+            base = url.rsplit("/", 1)[0]
+            for imported in re.findall(r'from "\./([^"]+)"', source):
+                if call(f"{real_assets_server}{base}/{imported}")[0] != 200:
+                    broken.append(imported)
+        assert broken == []

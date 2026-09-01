@@ -1,10 +1,16 @@
 """Static checks on the browser recorder's assets.
 
 A browser cannot be driven from the test suite, so these prove only what is
-checkable without one: the assets exist, they reference each other, the API
-client covers the whole server contract, the four chunk statuses all have a
-colour, and nothing loads from a CDN. Real rendering is verified by opening
-the page - the same limitation the curses view has with its stub screen.
+checkable without one: the assets exist, the API client covers the whole
+server contract, the four chunk statuses all have a colour, and nothing loads
+from a CDN. Real rendering is verified by opening the page - the same
+limitation the curses view has with its stub screen.
+
+Deliberately absent: any assertion about the *spelling* of an asset URL. That
+kind of check only restates what the file says, and it pinned a /static/
+prefix the server did not serve while every script on the page 404'd.
+Whether an asset URL resolves is proved against a live server in
+tests/integration/test_recorder_server_http.py::TestTheRealPageLoads.
 """
 
 import re
@@ -42,11 +48,11 @@ class TestAssetsExist:
         for module in MODULES:
             assert module.exists(), module
 
-    def test_index_loads_the_stylesheet_and_the_entry_module(self):
-        markup = INDEX.read_text(encoding="utf8")
-        assert 'href="/static/style.css"' in markup
-        assert 'type="module"' in markup
-        assert 'src="/static/app.js"' in markup
+    def test_the_entry_script_is_loaded_as_a_module(self):
+        """Whether each asset URL resolves is proved by fetching it from a live
+        server in tests/integration; only the module type is checkable here,
+        and app.js uses import, so a classic script tag would not run at all."""
+        assert 'type="module"' in INDEX.read_text(encoding="utf8")
 
     def test_every_element_id_the_view_reads_exists_in_the_markup(self):
         markup = INDEX.read_text(encoding="utf8")
