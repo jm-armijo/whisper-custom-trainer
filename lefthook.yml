@@ -11,15 +11,8 @@ pre-commit:
       run: venv/bin/python -m pytest -q
     integration:
       run: venv/bin/python -m pytest -m integration -q
-    # One e2e happy case: record a take through a real pty and assert the wav
-    # and its dataset row land on disk (~20s). The rest of the e2e tier waits
-    # for pre-push - every case drives a pty in real time, so the full file
-    # costs ~3min and is too slow to pay on every commit.
-    e2e-happy-path:
-      run: venv/bin/python -m pytest "tests/e2e/test_recorder_app.py::TestRecordingLifecycle" -m e2e -q
-
-pre-push:
-  parallel: false
-  commands:
-    full-suite:
-      run: venv/bin/python -m pytest -m "unit or integration or e2e" -q
+    # The whole e2e tier. Every case drives a pty in real time, so this is the
+    # slow half of the gate (~4min all in) - accepted deliberately: a commit is
+    # only green when every automated test has actually run against it.
+    e2e:
+      run: venv/bin/python -m pytest -m e2e -q

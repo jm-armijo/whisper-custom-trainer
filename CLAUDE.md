@@ -48,16 +48,17 @@ ruff check . --fix                            # apply the safe fixes
 
 Hooks are managed by `lefthook` (`lefthook.yml`), installed by `setup.sh`:
 
-- **pre-commit** — `ruff`, the unit tier, the integration tier, and one e2e
-  happy case (`TestRecordingLifecycle`, ~70s total).
-- **pre-push** — the full suite (~7min).
+- **pre-commit** — `ruff`, then the unit, integration and e2e tiers: every
+  automated test, so a commit is green only when the whole suite has run
+  against it. Budget ~4-5min per commit; most of it is the e2e tier driving a
+  pty in real time, whose blink-interval timing cannot be shortened without
+  testing something other than what ships.
 
-Two things are deliberately kept off pre-commit. `tests/e2e/test_pipeline.py`
-downloads `whisper-small` and trains an adapter, so a commit would block on a
-model download. The rest of `test_recorder_app.py` drives a pty in real time,
-including blink-interval timing that cannot be shortened without testing
-something other than what ships — the full file costs ~3min against ~20s for
-the single happy case that proves a take reaches disk.
+There is no pre-push hook — the commit gate is the only gate.
+
+`tests/e2e/test_pipeline.py` would download `whisper-small` and train an
+adapter, but it skips itself whenever the exports and vendored repos it needs
+are absent, so it costs a commit nothing until those artifacts exist.
 
 A few ruff rules are switched off per file rather than obeyed, because obeying
 them would break working code: `recorder_state.py` must hold its temp file open
