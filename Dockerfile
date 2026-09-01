@@ -32,7 +32,7 @@ WORKDIR /app
 
 # Only the modules the server actually imports. Copying the whole tree would
 # drag in train.py/merge.py/export.py, whose imports are not installed here.
-COPY recorder_server.py recorder_state.py whisper_pipeline.py ./
+COPY recorder_server.py recorder_scripts.py recorder_state.py whisper_pipeline.py ./
 COPY static/ ./static/
 
 # Defaults match the compose mounts; every one is overridable on the command

@@ -8,6 +8,7 @@ missing hid a real failure in this repo before (see CLAUDE.md on
 ct2-transformers-converter).
 """
 
+import ast
 import shutil
 import subprocess
 
@@ -16,6 +17,8 @@ import pytest
 import whisper_pipeline as wp
 
 pytestmark = pytest.mark.integration
+
+SERVER_MODULE = "recorder_server"
 
 DOCKERFILE = wp.PROJECT_ROOT / "Dockerfile"
 COMPOSE_FILE = wp.PROJECT_ROOT / "docker-compose.yml"
@@ -42,6 +45,42 @@ def docker_daemon():
     if probe.returncode != 0:
         pytest.skip(f"docker daemon unreachable: {probe.stderr.strip().splitlines()[-1:]}")
     return binary
+
+
+def local_imports_of(module, seen=None):
+    """Every project module reachable from `module` by import, including itself.
+
+    Parsed rather than imported: importing the server would bind its socket.
+    """
+    seen = set() if seen is None else seen
+    path = wp.PROJECT_ROOT / f"{module}.py"
+    if module in seen or not path.exists():
+        return seen
+    seen.add(module)
+
+    tree = ast.parse(path.read_text())
+    for node in ast.walk(tree):
+        names = []
+        if isinstance(node, ast.Import):
+            names = [alias.name.split(".")[0] for alias in node.names]
+        elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+            names = [node.module.split(".")[0]]
+        for name in names:
+            if (wp.PROJECT_ROOT / f"{name}.py").exists():
+                local_imports_of(name, seen)
+    return seen
+
+
+def server_modules():
+    """The server's local import graph, or a skip until that module lands.
+
+    Only the two tests that read the server's imports depend on it; the
+    packaging assertions hold whether or not it exists yet, so this is a
+    per-test guard rather than a module-wide one.
+    """
+    if not (wp.PROJECT_ROOT / f"{SERVER_MODULE}.py").exists():
+        pytest.skip(f"{SERVER_MODULE}.py does not exist yet; cannot read its imports")
+    return local_imports_of(SERVER_MODULE)
 
 
 def instructions(source):
@@ -93,6 +132,26 @@ class TestImageStaysSmall:
         assert copied, "the image must copy the application in"
         assert not any(module in line for line in copied
                        for module in ("train.py", "merge.py", "export.py", "record_data.py"))
+
+    def test_copies_every_local_module_the_server_needs(self, dockerfile):
+        """A module left out crashes the container on import, not at build time."""
+        copied = "\n".join(line for line in dockerfile.splitlines() if line.startswith("COPY "))
+        for module in server_modules():
+            assert f"{module}.py" in copied, f"{module} is imported but never COPYed"
+
+    def test_the_copied_modules_import_nothing_uninstalled(self, dockerfile):
+        """Heavy imports live inside functions, so module scope must stay clean.
+
+        librosa is installed; torch and transformers are not, and a top-level
+        import of either would break the container the first time it started.
+        """
+        for module in server_modules():
+            source = (wp.PROJECT_ROOT / f"{module}.py").read_text()
+            top_level = [line for line in source.splitlines()
+                         if line.startswith(("import ", "from "))]
+            for package in TRAINING_ONLY_PACKAGES:
+                assert not any(line.startswith((f"import {package}", f"from {package}"))
+                               for line in top_level), f"{module} imports {package} at module scope"
 
     def test_excludes_the_heavy_directories_from_the_build_context(self):
         """The context is uploaded before the first layer; venv/ and models are GBs."""
