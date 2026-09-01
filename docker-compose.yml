@@ -1,0 +1,42 @@
+# Runs the web recorder on the DietPi box so a phone on the LAN can record.
+#
+#   docker compose up -d --build
+#
+# Recording from a phone needs a secure context: browsers refuse getUserMedia
+# over plain HTTP to a LAN IP. See "Running on DietPi / Docker" in README.md.
+services:
+  recorder:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: my-whisper-recorder
+    container_name: my-whisper-recorder
+
+    # Published on all interfaces so the phone can reach the box by its LAN IP.
+    # The container-side bind is 0.0.0.0 (see the Dockerfile); binding to
+    # 127.0.0.1 there would leave this port answering nothing.
+    ports:
+      - "${RECORDER_PORT:-8080}:8080"
+
+    # The dataset must outlive the container: `docker compose down` and a
+    # rebuilt image both destroy the writable layer, and every take recorded
+    # into it would go with them. All three paths live on the host.
+    volumes:
+      # Reading material, host-managed and never written by the server.
+      - ./scripts:/data/scripts:ro
+      # Recorded wav files.
+      - ./data:/data/audio
+      # The dataset rows. Bind-mounted as a file, so it must already exist on
+      # the host - Docker would otherwise create a *directory* here and every
+      # CSV write would fail with EISDIR. `touch dataset.csv` before the first
+      # `up`; the README says so too.
+      - ./dataset.csv:/data/dataset.csv
+
+    # A crashed recorder should come back on its own after a reboot of the box,
+    # but a deliberate `compose stop` should stay stopped.
+    restart: unless-stopped
+
+    # The dataset rows the server writes reference host paths under ./data.
+    # Running as the invoking user keeps those files owned by that user rather
+    # than root, so training can read them back on the laptop after an rsync.
+    user: "${RECORDER_UID:-1000}:${RECORDER_GID:-1000}"

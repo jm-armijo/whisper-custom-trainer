@@ -104,6 +104,83 @@ Colours and the blink interval live in `recorder_theme.json`:
 Any of the eight terminal colour names, `"default"`, or `"color:N"` for a
 256-colour index. `--theme other.json` selects a different file.
 
+## Running on DietPi / Docker
+
+The web recorder runs in a container on a home server (DietPi, Raspberry Pi, any
+Debian-ish box) so you can record from a phone browser on the LAN. The container
+**records only** — training stays on the laptop, so torch, transformers and
+datasets are not installed and the image is roughly **400-500 MB**, not 2 GB.
+The base is `python:3.12-slim`, a multi-arch manifest, so it builds on arm64
+unchanged.
+
+```bash
+touch dataset.csv          # bind-mounted as a file; Docker would otherwise
+mkdir -p data scripts      # create a directory here and every CSV write fails
+
+docker compose up -d --build
+docker compose logs -f     # watch requests arrive
+```
+
+Then open `http://<box-ip>:8080` on the phone — but read the next section first,
+because the microphone will not work over plain HTTP.
+
+| Host path | In container | Why |
+|---|---|---|
+| `./scripts` | `/data/scripts` (read-only) | reading material you supply |
+| `./data` | `/data/audio` | recorded `.wav` files |
+| `./dataset.csv` | `/data/dataset.csv` | the dataset rows |
+
+All three are bind mounts, so takes survive `docker compose down` and a rebuild.
+Copy `data/` and `dataset.csv` back to the laptop (`rsync -a`) when it is time to
+train. Override the published port with `RECORDER_PORT`, and the file ownership
+with `RECORDER_UID` / `RECORDER_GID` if your DietPi user is not `1000:1000`.
+
+### The microphone needs a secure context
+
+**This is the one thing that will bite you.** `getUserMedia` — the API the page
+uses to reach the microphone — is gated behind a *secure context*. Browsers grant
+it over **HTTPS** or on **`localhost`**, and nowhere else. Loading
+`http://192.168.1.50:8080` on your phone will render the page fine and then fail
+to record: Chrome reports `navigator.mediaDevices` as `undefined`, Safari and
+Firefox refuse the permission prompt. Nothing is wrong with the server.
+
+Three practical ways out, cheapest first:
+
+**1. Tell Chrome to trust the one origin** (fastest; desktop and Android Chrome)
+
+Open `chrome://flags/#unsafely-treat-insecure-origin-as-secure`, enable it, and
+add the exact origin — scheme, IP and port, no trailing slash:
+
+```
+http://192.168.1.50:8080
+```
+
+Relaunch the browser. This is per-device and per-origin, so it survives until the
+box changes IP — give it a DHCP reservation. iOS Safari has no equivalent flag.
+
+**2. A hostname with real HTTPS** (best if you already run Tailscale)
+
+Tailscale issues a genuine certificate for a machine on your tailnet:
+
+```bash
+tailscale cert "$(tailscale status --json | jq -r .Self.DNSName | sed 's/\.$//')"
+tailscale serve --bg 8080     # https://<host>.<tailnet>.ts.net -> the recorder
+```
+
+The phone reaches it over the tailnet from anywhere, and the mic works with no
+per-device configuration. Any reverse proxy holding a Let's Encrypt certificate
+(Caddy, nginx) does the same job on the LAN.
+
+**3. A self-signed certificate**
+
+Terminate TLS in a proxy in front of the container. Every browser will show an
+interstitial you must accept per device, and iOS additionally requires the CA to
+be installed *and* trusted under Settings > General > About > Certificate Trust
+Settings. It works, but option 1 or 2 is less trouble.
+
+The container itself always speaks plain HTTP — TLS belongs in front of it, not
+in a stdlib `http.server`.
+
 ## Tests
 
 Structured as a testing pyramid; the fast tier runs by default.
