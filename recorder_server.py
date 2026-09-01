@@ -207,39 +207,52 @@ def scripts_payload(config):
     return {"scripts": rows}
 
 
+# What both responses report about a script. script_progress already returns
+# every one of these under these names, so this is a projection of it rather
+# than a second calculation - the picker row and the script response cannot
+# disagree about a count.
+PROGRESS_FIELDS = ("name", "language", "total", "recorded_count", "next_index", "complete")
+
+
+def _progress_payload(progress):
+    """The JSON-safe view of one script_progress result.
+
+    Only `recorded` needs converting: it is a set, which json cannot encode,
+    and sorting it makes the response byte-identical between runs.
+    """
+    payload = {field: progress[field] for field in PROGRESS_FIELDS}
+    payload["recorded"] = sorted(progress["recorded"])
+    return payload
+
+
 def _summary(config, item):
     """One picker row. A script whose language cannot be inferred is still
     listed - hiding it would leave the user unable to see why it is missing."""
     if item["language"] is None:
-        return {
-            "name": item["name"], "language": None,
-            "total": 0, "recorded_count": 0, "recorded": [], "complete": False,
-        }
+        return _unreadable_summary(item["name"])
 
     progress = rsc.script_progress(
         item["path"], config.csv_path, config.audio_dir, item["language"]
     )
+    return _progress_payload(progress)
+
+
+def _unreadable_summary(name):
+    """A script with no inferable language: listed, but recordable nowhere.
+
+    Counted as zero of zero rather than omitted, so the picker can show the
+    file and the user can see why it cannot be recorded into.
+    """
     return {
-        "name": progress["name"],
-        "language": progress["language"],
-        "total": progress["total"],
-        "recorded_count": progress["recorded_count"],
-        "recorded": sorted(progress["recorded"]),
-        "complete": progress["complete"],
+        "name": name, "language": None, "total": 0, "recorded_count": 0,
+        "recorded": [], "next_index": 0, "complete": False,
     }
 
 
 def script_payload(config, name):
     """One script's chunks, each with whether it already has a take."""
     _, _, progress = _progress(config, name)
-    return {
-        "name": progress["name"],
-        "language": progress["language"],
-        "total": progress["total"],
-        "recorded_count": progress["recorded_count"],
-        "recorded": sorted(progress["recorded"]),
-        "next_index": progress["next_index"],
-        "complete": progress["complete"],
+    return _progress_payload(progress) | {
         "chunks": rsc.chunk_view(progress["chunks"], progress["recorded"]),
     }
 
@@ -329,7 +342,7 @@ _AUDIO = re.compile(r"^/api/scripts/([^/]+)/chunks/(\d+)/audio/?$")
 
 
 def parse_path(raw_path):
-    """(route, script name, chunk index, None) for a URL, or a null route.
+    """(route, script name, chunk index) for a URL, or a null route.
 
     A traversing name is decoded and passed through rather than rejected here:
     recorder_scripts.resolve_script is the single guard, so there is one place
@@ -338,16 +351,16 @@ def parse_path(raw_path):
     path = urlparse(raw_path).path
 
     if _SCRIPTS.match(path):
-        return ("scripts", None, None, None)
+        return ("scripts", None, None)
 
     for route, pattern in (("audio", _AUDIO), ("chunk", _CHUNK), ("script", _SCRIPT)):
         match = pattern.match(path)
         if match:
             name = unquote(match.group(1))
             index = int(match.group(2)) if match.lastindex > 1 else None
-            return (route, name, index, None)
+            return (route, name, index)
 
-    return (None, None, None, None)
+    return (None, None, None)
 
 
 class RecorderHandler(SimpleHTTPRequestHandler):
@@ -363,7 +376,7 @@ class RecorderHandler(SimpleHTTPRequestHandler):
         super().__init__(*args, directory=str(self.config.static_dir), **kwargs)
 
     def do_GET(self):
-        route, name, index, _ = parse_path(self.path)
+        route, name, index = parse_path(self.path)
 
         if route == "scripts":
             self._respond(lambda: scripts_payload(self.config))
@@ -377,7 +390,7 @@ class RecorderHandler(SimpleHTTPRequestHandler):
             self._serve_static()
 
     def do_POST(self):
-        route, name, index, _ = parse_path(self.path)
+        route, name, index = parse_path(self.path)
         if route != "chunk":
             self._error(HTTPStatus.NOT_FOUND, f"Cannot POST to {self.path}")
             return
@@ -391,7 +404,7 @@ class RecorderHandler(SimpleHTTPRequestHandler):
         self._respond(lambda: save_chunk(self.config, name, index, payload))
 
     def do_DELETE(self):
-        route, name, index, _ = parse_path(self.path)
+        route, name, index = parse_path(self.path)
         if route != "chunk":
             self._error(HTTPStatus.NOT_FOUND, f"Cannot DELETE {self.path}")
             return

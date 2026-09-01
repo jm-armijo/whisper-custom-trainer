@@ -4,7 +4,7 @@
 // geometry; knows nothing of fetch, MediaRecorder, or what makes a chunk
 // count as recorded. Every function here takes data and patches DOM.
 
-import { RECORDING, blinkGlyph, elapsedLabel } from "./state.js";
+import { RECORDING, UPLOADING, blinkGlyph, elapsedLabel, isBusy } from "./state.js";
 
 export function elements() {
   return {
@@ -142,20 +142,24 @@ function drawStatus(dom, view) {
 
 function drawControls(dom, view) {
   const recording = view.state === RECORDING;
+  const busy = isBusy(view.state);
   const hasScript = view.chunks.length > 0;
   const onRecorded = hasScript && view.recorded.has(view.cursor);
 
   dom.recordButton.textContent = recording ? "Stop" : "Record";
   dom.recordButton.classList.toggle("is-recording", recording);
-  dom.recordButton.disabled = !hasScript;
+  // Disabled while a take uploads, so a second tap cannot start capturing over
+  // one still in flight; the controller refuses it too, but a live-looking
+  // button that does nothing reads as a dropped tap.
+  dom.recordButton.disabled = !hasScript || view.state === UPLOADING;
 
   // Redo and play act on the take under the cursor, so they are meaningless
-  // both mid-capture and on a line with no audio yet.
-  dom.redoButton.disabled = recording || !onRecorded;
-  dom.playButton.disabled = recording || !onRecorded;
-  dom.prevButton.disabled = recording || !hasScript || view.cursor === 0;
+  // both mid-take and on a line with no audio yet.
+  dom.redoButton.disabled = busy || !onRecorded;
+  dom.playButton.disabled = busy || !onRecorded;
+  dom.prevButton.disabled = busy || !hasScript || view.cursor === 0;
   dom.nextButton.disabled =
-    recording || !hasScript || view.cursor >= view.chunks.length - 1;
+    busy || !hasScript || view.cursor >= view.chunks.length - 1;
 }
 
 /** Two classes because the two layouts disagree about the resting state: on a

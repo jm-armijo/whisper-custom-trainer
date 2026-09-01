@@ -11,12 +11,20 @@ export const PENDING = "pending";
 
 export const IDLE = "idle";
 export const RECORDING = "recording";
+// A take that has stopped but is still in flight to the server. Its own state
+// rather than IDLE: on a phone the upload can take seconds, and while the
+// controller read IDLE a second tap started a fresh recording on top of the
+// one still uploading.
+export const UPLOADING = "uploading";
 
-// A take shorter than this carries no speech; whisper_pipeline.MIN_CLIP_SECONDS
-// rejects it server-side, so the UI refuses to upload it in the first place.
-export const MIN_CLIP_SECONDS = 0.4;
-// Whisper's encoder window. Longer takes still save, but are worth redoing.
-export const MAX_CLIP_SECONDS = 29.0;
+// Deliberately absent: MIN_CLIP_SECONDS and MAX_CLIP_SECONDS.
+//
+// Both used to be hardcoded here alongside whisper_pipeline's copies, with
+// nothing to catch the two drifting apart. Neither number is the browser's to
+// know: the server decodes the upload and is the only side that can measure
+// what actually landed in the dataset, so it reports `seconds` and `too_long`
+// on every save and rejects a short take with a 400. rejectClip and
+// savedMessage below take that verdict as an argument rather than deciding it.
 
 /** Per-line status, mirroring recorder_state.chunk_statuses.
  *
@@ -77,19 +85,15 @@ export function blinkGlyph(tick) {
   return tick % 2 === 0 ? "●" : "○";
 }
 
-/** Why a clip cannot be kept, or null when it is usable. */
-export function rejectClip(seconds) {
-  if (seconds < MIN_CLIP_SECONDS) {
-    return `discarded: ${seconds.toFixed(2)}s is too short to use`;
-  }
-  return null;
-}
-
-export function savedMessage(seconds) {
-  if (seconds > MAX_CLIP_SECONDS) {
-    return `saved ${seconds.toFixed(1)}s - exceeds Whisper's 30s window, consider redo`;
-  }
-  return `saved ${seconds.toFixed(1)}s`;
+/** What to say about a saved take, from what the server measured.
+ *
+ * `seconds` and `tooLong` are the server's, not a stopwatch here: the browser
+ * can only time wall-clock elapsed, which includes MediaRecorder's startup and
+ * flush latency, so it would report a duration the stored clip does not have.
+ */
+export function savedMessage({ seconds, tooLong }) {
+  const saved = `saved ${seconds.toFixed(1)}s`;
+  return tooLong ? `${saved} - exceeds Whisper's 30s window, consider redo` : saved;
 }
 
 /** Session state for one open script. Holds no DOM and performs no I/O. */
@@ -164,11 +168,25 @@ export function buildView({ session, scripts, state, tick = 0, elapsed = 0, mess
   };
 }
 
-const LEGEND_IDLE = "record · redo · play · prev · next";
-const LEGEND_RECORDING = "stop to save the take";
+const LEGENDS = {
+  [IDLE]: "record · redo · play · prev · next",
+  [RECORDING]: "stop to save the take",
+  [UPLOADING]: "saving the take…",
+};
 
 function legendFor(state) {
-  return state === RECORDING ? LEGEND_RECORDING : LEGEND_IDLE;
+  return LEGENDS[state] || LEGENDS[IDLE];
+}
+
+/** Whether a take is in progress, capturing or uploading.
+ *
+ * The single rule the controller and the view both ask, so "can this button do
+ * anything right now" cannot answer differently in the two places. Folding
+ * UPLOADING into this is what stops a second tap from starting a recording
+ * over an upload that has not landed yet.
+ */
+export function isBusy(state) {
+  return state === RECORDING || state === UPLOADING;
 }
 
 /** One menu row per script: how far along it is, and whether it is finished. */

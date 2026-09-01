@@ -6,7 +6,15 @@
 import * as api from "./api.js";
 import * as mic from "./microphone.js";
 import * as render from "./render.js";
-import { IDLE, RECORDING, ScriptSession, buildView, rejectClip, savedMessage } from "./state.js";
+import {
+  IDLE,
+  RECORDING,
+  UPLOADING,
+  ScriptSession,
+  buildView,
+  isBusy,
+  savedMessage,
+} from "./state.js";
 
 // The dot blinks by redrawing on a timer, matching recorder_theme's blink_ms;
 // a CSS animation would drift from the elapsed counter beside it.
@@ -70,7 +78,7 @@ async function refreshScripts() {
 }
 
 async function openScript(name) {
-  if (app.state === RECORDING) {
+  if (isBusy(app.state)) {
     return;
   }
   await guard(async () => {
@@ -86,7 +94,7 @@ async function openScript(name) {
 }
 
 function selectChunk(index) {
-  if (app.state === RECORDING || !app.session) {
+  if (isBusy(app.state) || !app.session) {
     return;
   }
   app.session.select(index);
@@ -95,7 +103,7 @@ function selectChunk(index) {
 }
 
 function move(action) {
-  if (app.state === RECORDING || !app.session) {
+  if (isBusy(app.state) || !app.session) {
     return;
   }
   app.session.move(action);
@@ -106,6 +114,12 @@ function move(action) {
 async function toggleRecord() {
   if (app.state === RECORDING) {
     await stopRecording();
+    return;
+  }
+  // A tap landing while the previous take is still uploading does nothing.
+  // Falling through to startRecording here is what let a second tap capture
+  // over an in-flight upload, so two takes raced for one line.
+  if (app.state === UPLOADING) {
     return;
   }
   await startRecording();
@@ -136,28 +150,41 @@ async function startRecording() {
 async function stopRecording() {
   clearInterval(app.timer);
   app.timer = null;
-  const seconds = (Date.now() - app.startedAt) / 1000;
   const blob = await microphone.stop();
-  app.state = IDLE;
 
+  // Paint UPLOADING before awaiting the POST, not after. Setting the state and
+  // going straight into the await left the screen reading RECORDING with a
+  // frozen dot for the whole of a slow phone upload, while toggleRecord already
+  // saw a state that let a second tap start a new take over the in-flight one.
   const index = app.session.cursor;
-  const rejection = rejectClip(seconds);
-  if (rejection) {
-    const kept = app.session.isRecorded(index) ? " - previous take kept" : "";
-    say(rejection + kept);
-    return;
-  }
+  app.state = UPLOADING;
+  app.message = "";
+  repaint();
 
+  try {
+    await saveTake(index, blob);
+  } finally {
+    app.state = IDLE;
+    // The mic is released only once the take is safely uploaded: closing it
+    // before the POST would drop the stream while the blob was still in flight.
+    microphone.close();
+    repaint({ scroll: true });
+  }
+}
+
+/** Upload one take and fold the server's verdict into the session. */
+async function saveTake(index, blob) {
   await guard(async () => {
-    await api.saveChunk(app.session.name, index, blob);
+    const saved = await api.saveChunk(app.session.name, index, blob);
     app.session.markRecorded(index);
     app.version += 1;
     bumpScriptProgress();
     // Advance so a straight read needs one button per line, as the terminal
     // recorder's space-then-down rhythm does.
     app.session.move("down");
-    app.message = savedMessage(seconds);
-    repaint({ scroll: true });
+    // The duration is the server's: it decoded the clip that actually landed,
+    // where this side could only time MediaRecorder's start-to-stop latency.
+    app.message = savedMessage(saved);
   });
 }
 
@@ -170,7 +197,7 @@ function bumpScriptProgress() {
 }
 
 async function redo() {
-  if (!app.session || app.state === RECORDING) {
+  if (!app.session || isBusy(app.state)) {
     return;
   }
   const index = app.session.cursor;

@@ -309,20 +309,20 @@ class TestRouteParsing:
     """URL shape, decided without a socket."""
 
     def test_matches_the_scripts_collection(self):
-        assert srv.parse_path("/api/scripts") == ("scripts", None, None, None)
+        assert srv.parse_path("/api/scripts") == ("scripts", None, None)
 
     def test_ignores_a_trailing_slash(self):
-        assert srv.parse_path("/api/scripts/") == ("scripts", None, None, None)
+        assert srv.parse_path("/api/scripts/") == ("scripts", None, None)
 
     def test_matches_one_script(self):
-        assert srv.parse_path("/api/scripts/es.txt") == ("script", "es.txt", None, None)
+        assert srv.parse_path("/api/scripts/es.txt") == ("script", "es.txt", None)
 
     def test_matches_a_chunk(self):
-        assert srv.parse_path("/api/scripts/es.txt/chunks/3") == ("chunk", "es.txt", 3, None)
+        assert srv.parse_path("/api/scripts/es.txt/chunks/3") == ("chunk", "es.txt", 3)
 
     def test_matches_a_chunks_audio(self):
         assert srv.parse_path("/api/scripts/es.txt/chunks/3/audio") == (
-            "audio", "es.txt", 3, None,
+            "audio", "es.txt", 3,
         )
 
     def test_percent_decodes_the_script_name(self):
