@@ -9,12 +9,14 @@ ct2-transformers-converter).
 """
 
 import ast
+import inspect
 import re
 import shutil
 import subprocess
 
 import pytest
 
+import recorder_state as rs
 import whisper_pipeline as wp
 
 pytestmark = pytest.mark.integration
@@ -126,6 +128,23 @@ class TestImageStaysSmall:
     def test_omits_sounddevice(self, dockerfile):
         """The browser captures the mic; the container has no audio device."""
         assert "sounddevice" not in dockerfile
+
+    def test_the_readme_quotes_the_size_the_image_actually_is(self):
+        """The documented size must be the one that lands on the box's SD card.
+
+        The README said 400-500 MB, which is the *compressed* figure a registry
+        transfers - `docker image inspect` reports 369 MB for exactly that
+        reason. Unpacked, the built arm64 image is ~1.1 GB of files: librosa
+        drags in numba/llvmlite (169 MB), scipy (118 MB) and sklearn (57 MB),
+        and the ffmpeg apt install pulls libLLVM (118 MB) plus mesa. On a Pi
+        with an 8 GB card that difference decides whether the image fits, so
+        the README has to quote the unpacked size.
+        """
+        readme = (wp.PROJECT_ROOT / "README.md").read_text()
+        assert "400-500 MB" not in readme, (
+            "400-500 MB is the compressed transfer size, not the ~1.1 GB the "
+            "image unpacks to on the box"
+        )
 
     def test_copies_only_the_modules_the_server_imports(self, dockerfile):
         """train/merge/export import libraries this image does not install."""
@@ -351,3 +370,27 @@ class TestTheContainerCanActuallyWriteTheDataset:
         lock would guard nothing across the mount."""
         _, _, kind = dataset_mount()
         assert kind == "directory"
+
+    def test_the_lock_docstring_records_where_the_guard_does_not_hold(self):
+        """dataset_lock must not promise a guard it cannot deliver.
+
+        Measured on the shipped compose layout: a host process holding the
+        flock and a containerised writer do NOT serialise on Docker Desktop
+        for Mac. The mount is `fakeowner` over VirtioFS and the container runs
+        under a separate linuxkit VM kernel, so the two sides lock different
+        inodes in different kernels - the container wrote the CSV 110ms into a
+        6s host-held lock. Host-to-host and container-to-container both block
+        correctly, and so do two containers sharing the mount, which is the
+        DietPi topology.
+
+        The docstring claimed flock is honoured 'including a Docker bind
+        mount' without qualification, which would lead the next maintainer to
+        trust that guard while developing on a Mac. It has to name the case
+        where it fails.
+        """
+        # Whitespace-collapsed: the phrase is free to wrap across lines.
+        source = " ".join((inspect.getdoc(rs.dataset_lock) or "").split())
+        assert "macOS" in source and "Docker Desktop" in source, (
+            "dataset_lock's docstring must record that the host/container flock "
+            "does not serialise on Docker Desktop for Mac"
+        )

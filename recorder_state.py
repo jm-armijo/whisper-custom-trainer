@@ -36,9 +36,19 @@ def dataset_lock(csv_path):
     The lock lives in a sidecar file rather than on dataset.csv itself because
     every write replaces that inode (see _write_rows); a descriptor held on the
     replaced file would guard a path nobody writes to any more. flock is
-    advisory and inherited across fork, and it is honoured on both macOS and
-    Linux, including a Docker bind mount, where it is held by the kernel on the
-    underlying inode rather than by the filesystem being mounted.
+    advisory and inherited across fork, and it is honoured between processes
+    sharing a kernel: host-to-host, container-to-container, and between two
+    containers sharing the bind mount. That last case is the deployment the
+    guard exists for - on the DietPi box the terminal recorder and the
+    container run against one Linux kernel, so both sides lock the same inode.
+
+    It does NOT serialise a macOS host process against a container on Docker
+    Desktop. That bind mount is `fakeowner` over VirtioFS and the container
+    runs under a separate linuxkit VM kernel, so the two sides lock different
+    inodes in different kernels: a containerised writer completes a save well
+    inside a lock the host is still holding. Recording from the browser and the
+    terminal at the same time is therefore safe on the box and unguarded on a
+    Mac - run one front end at a time when developing locally.
     """
     path = Path(csv_path)
     path.parent.mkdir(parents=True, exist_ok=True)

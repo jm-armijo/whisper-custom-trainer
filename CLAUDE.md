@@ -116,6 +116,14 @@ at once, so a `threading.Lock` would not see the other side. The lock is on a
 sidecar rather than the CSV because `_write_rows` replaces that inode on every
 write.
 
+flock only serialises processes **sharing a kernel**. That covers the DietPi
+deployment — the terminal recorder and the container are one Linux kernel, one
+inode — and it was measured to hold between two containers sharing the mount.
+It does **not** hold between a macOS host process and a container on Docker
+Desktop: the mount is `fakeowner` over VirtioFS with the container under a
+separate linuxkit VM kernel, so a containerised save completes inside a lock
+the host still holds. Locally on a Mac, run one front end at a time.
+
 ### Portable dataset rows
 
 `audio_path` holds a **bare filename**, not an absolute path

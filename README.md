@@ -112,10 +112,13 @@ A second front end onto the same dataset: a browser page instead of curses, so a
 phone can record while the box sits in a cupboard. It is stdlib-only — no web
 framework — and shares every rule with the terminal recorder.
 
-> **New, and not yet verified in a real browser.** The server, its API and the
-> dataset writes are tested; the page itself has not been driven on real
-> hardware. Do one manual `docker compose up` and one browser load before
-> trusting it with a recording session.
+> **The container is verified; the browser page is not.** A real
+> `docker compose up` on arm64 has been driven end to end over the API — a
+> WebM/Opus upload transcodes through the container's ffmpeg, lands on the host
+> as 16 kHz mono PCM_16, writes its row and lock sidecar, plays back
+> byte-identically and deletes cleanly, with every static asset loading. What
+> remains unproven is `getUserMedia` in a real phone browser and the whole thing
+> on actual DietPi hardware. Do one browser load before trusting a session to it.
 
 ### Running it
 
@@ -131,9 +134,15 @@ With no flags it reads `scripts/`, writes clips to `data/` and rows to
 the two front ends share one dataset.
 
 **On the DietPi box**, in Docker. The container **records only** — training stays
-on the laptop, so torch, transformers and datasets are not installed and the
-image is roughly **400-500 MB**, not 2 GB. The base is `python:3.12-slim`, a
-multi-arch manifest, so it builds on arm64 unchanged.
+on the laptop, so torch, transformers and datasets are not installed. The base is
+`python:3.12-slim`, a multi-arch manifest, so it builds on arm64 unchanged.
+
+Budget **~1.1 GB of disk** for it (≈370 MB compressed, which is what a registry
+transfers and what `docker image inspect` reports — not what lands on the card).
+It is still well under the ~2 GB the training stack would add, but it is not
+small: `librosa` pulls in numba/llvmlite, scipy and sklearn, and the `ffmpeg`
+package brings libLLVM and mesa with it. A cold `docker compose build --no-cache`
+took **38 s** on an M-series Mac; expect appreciably longer on a Pi.
 
 ```bash
 mkdir -p data scripts
@@ -162,6 +171,15 @@ way the image built, started and served the page perfectly happily while every
 single take failed to save. Inside a mounted **directory** the CSV is an
 ordinary file, which rename can replace. It also puts `dataset.csv.lock` on the
 host, where a terminal recorder writing the same dataset can actually see it.
+
+**That shared lock works on the box, but not on a Mac.** `flock` only serialises
+processes sharing a kernel. On DietPi the terminal recorder and the container are
+one Linux kernel and one inode, so the two front ends can record into a single
+dataset safely — measured, and it also holds between two containers sharing the
+mount. Under **Docker Desktop for Mac** they are not: the mount is `fakeowner`
+over VirtioFS with the container in a linuxkit VM, so each side locks a different
+inode in a different kernel and a containerised save completes inside a lock the
+host is still holding. Developing locally, run one front end at a time.
 
 ### Flags and environment variables
 
