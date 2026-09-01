@@ -38,11 +38,15 @@ COPY static/ ./static/
 # Defaults match the compose mounts; every one is overridable on the command
 # line. 0.0.0.0 is required for the published port to reach a phone on the LAN:
 # bound to 127.0.0.1 the server would only answer inside the container.
+# RECORDER_CSV sits *inside* RECORDER_OUT_DIR rather than beside it: that
+# directory is the one bind mount, and the dataset must be an ordinary file
+# within a mounted directory. Mounted as a file of its own, os.replace onto it
+# fails with EBUSY - see the volumes comment in docker-compose.yml.
 ENV RECORDER_HOST=0.0.0.0 \
     RECORDER_PORT=8080 \
     RECORDER_SCRIPTS_DIR=/data/scripts \
     RECORDER_OUT_DIR=/data/audio \
-    RECORDER_CSV=/data/dataset.csv
+    RECORDER_CSV=/data/audio/dataset.csv
 
 EXPOSE 8080
 

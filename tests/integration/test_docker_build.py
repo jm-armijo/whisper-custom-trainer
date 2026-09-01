@@ -217,7 +217,11 @@ class TestPersistence:
         assert "./data:/data/audio" in compose
 
     def test_mounts_the_dataset_csv(self, compose):
-        assert "./dataset.csv:/data/dataset.csv" in compose
+        """Inside a mounted directory, never as a file mount of its own: see
+        TestTheContainerCanActuallyWriteTheDataset for why rename needs that."""
+        assert "./dataset.csv:" not in compose
+        _, _, kind = dataset_mount()
+        assert kind == "directory"
 
     def test_mounts_the_reading_material_read_only(self, compose):
         """The server only reads scripts/; :ro makes an accidental write fail loudly."""
@@ -254,3 +258,96 @@ class TestComposeIsValid:
             capture_output=True, text=True, cwd=wp.PROJECT_ROOT, check=False,
         )
         assert result.returncode == 0, result.stderr[-2000:]
+
+
+# recorder_state._write_rows writes a temp file beside the dataset and
+# os.replace()s it into place. That is a rename(2), and on Linux a rename onto a
+# *mountpoint* fails with EBUSY - which is exactly what a single-file bind mount
+# makes of the target. Run against the real module inside a container so the
+# check cannot drift from what _write_rows actually does.
+SAVE_SCRIPT = """
+import sys
+sys.path.insert(0, "/app")
+import recorder_state as rs
+csv_path = sys.argv[1]
+rs.upsert_row(csv_path, "es_00000.wav", "a line", "es")
+print(open(csv_path).read().count("es_00000"))
+"""
+
+
+def compose_mounts():
+    """(host path, container path) for every volume the compose file declares."""
+    mounts = []
+    for line in COMPOSE_FILE.read_text().splitlines():
+        entry = line.strip()
+        if entry.startswith("- ./") and ":/" in entry:
+            host, container = entry[2:].split(":")[:2]
+            mounts.append((host, container))
+    return mounts
+
+
+def container_csv_path():
+    """Where the image tells the server to write the dataset."""
+    match = re.search(r"RECORDER_CSV=(\S+)", DOCKERFILE.read_text())
+    assert match, "the Dockerfile must set RECORDER_CSV"
+    return match.group(1)
+
+
+def dataset_mount():
+    """How compose mounts the dataset: the file itself, or its directory."""
+    csv_path = container_csv_path()
+    for host, container in compose_mounts():
+        if container == csv_path:
+            return host, container, "file"
+        if csv_path.startswith(container.rstrip("/") + "/"):
+            return host, container, "directory"
+    raise AssertionError(f"no compose mount covers {csv_path}")
+
+
+class TestTheContainerCanActuallyWriteTheDataset:
+    """A save must survive the mount layout, not just the image build.
+
+    Bind-mounting `./dataset.csv` as a single file makes the container-side path
+    a mountpoint, and `os.replace` onto a mountpoint raises EBUSY - so every
+    take POSTed to the container failed while the image built and started
+    perfectly happily. Mounting the *directory* leaves the CSV an ordinary file
+    inside it, which rename can replace.
+    """
+
+    def test_a_row_is_written_through_the_mount_compose_declares(self, tmp_path):
+        """The reproduction: upsert_row inside a container, on the real layout.
+
+        The mount is read from docker-compose.yml rather than hardcoded, so
+        this fails while compose bind-mounts the CSV as a file and passes once
+        it mounts the directory - it tests the shipped layout, not a fixture.
+        """
+        binary = docker_daemon()
+        csv_path = container_csv_path()
+        _, container_path, kind = dataset_mount()
+
+        host_dir = tmp_path / "state"
+        host_dir.mkdir()
+        if kind == "file":
+            host_csv = host_dir / "dataset.csv"
+            host_csv.touch()
+            volume = f"{host_csv}:{container_path}"
+        else:
+            volume = f"{host_dir}:{container_path}"
+
+        result = subprocess.run(
+            [binary, "run", "--rm",
+             "-v", volume,
+             "-v", f"{wp.PROJECT_ROOT}:/app:ro",
+             "python:3.12-slim", "python", "-c", SAVE_SCRIPT, csv_path],
+            capture_output=True, text=True, check=False,
+        )
+        assert result.returncode == 0, result.stderr[-1500:]
+        assert result.stdout.strip() == "1", result.stdout
+
+    def test_the_lock_sidecar_is_writable_in_the_container(self):
+        """dataset_lock creates dataset.csv.lock beside the CSV. With only the
+        CSV mounted that sidecar lands in the container's own writable layer,
+        where the host's terminal recorder cannot see it - so the cross-process
+        lock would guard nothing across the mount."""
+        _, _, kind = dataset_mount()
+        assert kind == "directory"

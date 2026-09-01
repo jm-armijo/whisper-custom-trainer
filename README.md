@@ -136,16 +136,11 @@ image is roughly **400-500 MB**, not 2 GB. The base is `python:3.12-slim`, a
 multi-arch manifest, so it builds on arm64 unchanged.
 
 ```bash
-touch dataset.csv          # bind-mounted as a file; Docker would otherwise
-mkdir -p data scripts      # create a directory here and every CSV write fails
+mkdir -p data scripts
 
 docker compose up -d --build
 docker compose logs -f     # one line per request
 ```
-
-That first line is not optional and not cosmetic: a bind mount whose host side
-is missing is created by Docker as a **directory**, and every subsequent CSV
-write then fails with `EISDIR`.
 
 Then open `http://<box-ip>:8080` on the phone — but read
 [the secure-context section](#the-microphone-needs-a-secure-context) first,
@@ -154,10 +149,19 @@ because the microphone will not work over plain HTTP.
 | Host path | In container | Why |
 |---|---|---|
 | `./scripts` | `/data/scripts` (read-only) | reading material you supply |
-| `./data` | `/data/audio` | recorded `.wav` files |
-| `./dataset.csv` | `/data/dataset.csv` | the dataset rows |
+| `./data` | `/data/audio` | recorded `.wav` files **and** `dataset.csv` |
 
-All three are bind mounts, so takes survive `docker compose down` and a rebuild.
+Both are bind mounts, so takes survive `docker compose down` and a rebuild.
+
+**The container writes its dataset to `data/dataset.csv`, not to `./dataset.csv`.**
+That is deliberate, and it is the one place the container's layout differs from
+the laptop's. Bind-mounting the CSV as a single file makes its container-side
+path a *mountpoint*, and every save ends with `os.replace` onto that path — a
+`rename(2)`, which Linux refuses onto a mountpoint with `EBUSY`. Mounted that
+way the image built, started and served the page perfectly happily while every
+single take failed to save. Inside a mounted **directory** the CSV is an
+ordinary file, which rename can replace. It also puts `dataset.csv.lock` on the
+host, where a terminal recorder writing the same dataset can actually see it.
 
 ### Flags and environment variables
 
@@ -275,10 +279,15 @@ The practical loop: record on the phone against the container, then bring the
 takes home before training.
 
 ```bash
-rsync -a dietpi:my-whisper/data/ data/       # the clips
-rsync -a dietpi:my-whisper/dataset.csv .     # the rows
+rsync -a dietpi:my-whisper/data/ data/            # the clips
+cp data/dataset.csv dataset.csv                   # the rows, where train.py looks
 python train.py
 ```
+
+The clips and the rows arrive in one `rsync` because the container keeps both in
+`data/` (see the mount table above). `train.py` defaults to `./dataset.csv`, so
+either copy it up as shown or point the flag at it: `python train.py --csv
+data/dataset.csv`.
 
 Record on the laptop with either front end — `record_data.py` for the curses TUI,
 or `recorder_server.py` if you prefer the browser. Both land on the same files.

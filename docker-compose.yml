@@ -20,17 +20,25 @@ services:
 
     # The dataset must outlive the container: `docker compose down` and a
     # rebuilt image both destroy the writable layer, and every take recorded
-    # into it would go with them. All three paths live on the host.
+    # into it would go with them. Both paths live on the host.
     volumes:
       # Reading material, host-managed and never written by the server.
       - ./scripts:/data/scripts:ro
-      # Recorded wav files.
+      # The wav files AND the dataset rows, as one directory.
+      #
+      # The CSV is deliberately NOT bind-mounted as a single file. A file bind
+      # mount makes its container-side path a *mountpoint*, and
+      # recorder_state._write_rows finishes every save with os.replace onto that
+      # path - a rename(2), which Linux refuses onto a mountpoint with EBUSY. So
+      # every take POSTed to the container failed while the image built and
+      # started perfectly happily. Mounting the directory leaves dataset.csv an
+      # ordinary file inside it, which rename can replace.
+      #
+      # It also puts dataset.csv.lock (see recorder_state.dataset_lock) on the
+      # host, where a terminal recorder writing the same dataset can see it;
+      # under a file mount the sidecar landed in the container's writable layer
+      # and the cross-process lock guarded nothing.
       - ./data:/data/audio
-      # The dataset rows. Bind-mounted as a file, so it must already exist on
-      # the host - Docker would otherwise create a *directory* here and every
-      # CSV write would fail with EISDIR. `touch dataset.csv` before the first
-      # `up`; the README says so too.
-      - ./dataset.csv:/data/dataset.csv
 
     # A crashed recorder should come back on its own after a reboot of the box,
     # but a deliberate `compose stop` should stay stopped.

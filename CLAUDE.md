@@ -127,6 +127,15 @@ row, and `record_data.py`'s startup `prune_missing` deleted every one of them as
 a clip gone missing. `resolve_audio_path` still honours an absolute path as
 written, so datasets recorded before this keep loading.
 
+The container writes `dataset.csv` **inside its one mounted directory**
+(`/data/audio/dataset.csv`), never as a bind mount of its own. A single-file
+bind mount makes the container-side path a mountpoint, and `_write_rows`
+finishes every save with `os.replace` onto it — a `rename(2)`, which Linux
+refuses onto a mountpoint with `EBUSY`. Mounted that way the image built,
+started and served the page while every take failed to save. The directory
+mount also puts `dataset.csv.lock` on the host, where a terminal recorder
+sharing the dataset can see it.
+
 Two constraints worth keeping: the record dot blinks by **redrawing on a timer**
 (`curses.A_BLINK` is ignored by most modern terminals), which is why the input
 loop is non-blocking; and `read_key` decodes **raw `ESC [ A` sequences** as well
