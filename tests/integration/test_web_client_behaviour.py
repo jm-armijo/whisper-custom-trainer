@@ -66,23 +66,113 @@ function element(id) {
     replaceChildren() { this.children = []; },
     addEventListener(event, handler) { this.handlers[event] = handler; },
     querySelector() { return null; },
-    getBoundingClientRect() { return { top: 0, bottom: 0 }; },
+    getBoundingClientRect() { return { top: 0, bottom: 0, width: 300, height: 56 }; },
   };
+  return node;
+}
+
+// A 2D context that records the calls made against it, so a test can ask what
+// the view drew rather than whether it holds the right string. Only the canvas
+// element gets one: everything else must keep working without.
+const drawn = [];
+function canvasElement(id) {
+  const node = element(id);
+  node.width = 0;
+  node.height = 0;
+  node.clientWidth = 300;
+  node.clientHeight = 56;
+  node.getContext = () => ({
+    clearRect: (...a) => drawn.push(["clearRect", ...a]),
+    fillRect: (...a) => drawn.push(["fillRect", ...a]),
+    strokeRect: () => {},
+    beginPath: () => drawn.push(["beginPath"]),
+    moveTo: () => {}, lineTo: () => {}, stroke: () => drawn.push(["stroke"]),
+    set strokeStyle(v) {}, set fillStyle(v) {},
+    set lineWidth(v) {}, set lineJoin(v) {},
+  });
   return node;
 }
 
 globalThis.document = {
   getElementById(id) {
-    if (!nodes.has(id)) { nodes.set(id, element(id)); }
+    if (!nodes.has(id)) {
+      nodes.set(id, id === "waveform" ? canvasElement(id) : element(id));
+    }
     return nodes.get(id);
   },
   createElement: () => element("created"),
 };
+
+// Web Audio, counting every context opened against every one closed. A leaked
+// AudioContext is invisible until a long session hits the browser's per-page
+// limit and the analyser silently stops attaching, so the count is the assert.
+const audio = { opened: 0, closed: 0, disconnected: 0, resumed: 0, decoded: 0 };
+globalThis.AudioContext = class {
+  constructor() { audio.opened += 1; this.state = "suspended"; }
+  resume() { audio.resumed += 1; this.state = "running"; return Promise.resolve(); }
+  close() { audio.closed += 1; this.state = "closed"; return Promise.resolve(); }
+  createMediaStreamSource() {
+    return { connect: () => {}, disconnect: () => { audio.disconnected += 1; } };
+  }
+  createAnalyser() {
+    return {
+      fftSize: 1024,
+      getByteTimeDomainData(target) {
+        // A recognisable non-silent frame, so a trace that is drawn at all is
+        // distinguishable from one drawn over an empty buffer.
+        for (let i = 0; i < target.length; i += 1) {
+          target[i] = 128 + Math.round(100 * Math.sin(i / 8));
+        }
+      },
+    };
+  }
+  decodeAudioData(buffer, resolve) {
+    audio.decoded += 1;
+    const decoded = {
+      numberOfChannels: 1,
+      getChannelData: () => Float32Array.from({ length: 4096 }, (_, i) => Math.sin(i / 16)),
+    };
+    resolve(decoded);
+    return Promise.resolve(decoded);
+  }
+};
+
+// requestAnimationFrame, counting frames scheduled against frames cancelled.
+// A loop left running after a take is a battery drain nobody sees on a desktop.
+const frames = { scheduled: 0, cancelled: 0, live: new Set() };
 globalThis.window = {
   matchMedia: () => ({ matches: false }),
   confirm: () => true,
+  AudioContext: globalThis.AudioContext,
+  devicePixelRatio: 1,
+  getComputedStyle: () => ({ getPropertyValue: () => "" }),
+  requestAnimationFrame(callback) {
+    frames.scheduled += 1;
+    const handle = setTimeout(() => { frames.live.delete(handle); callback(); }, 5);
+    frames.live.add(handle);
+    return handle;
+  },
+  cancelAnimationFrame(handle) {
+    frames.cancelled += 1;
+    frames.live.delete(handle);
+    clearTimeout(handle);
+  },
 };
-globalThis.Audio = class { play() { return Promise.resolve(); } addEventListener() {} };
+
+// An element with a clock, so the playhead can be driven the way a real one
+// drives it: through timeupdate, never through Web Audio.
+globalThis.Audio = class {
+  constructor() {
+    this.currentTime = 0; this.duration = NaN; this.handlers = {};
+    // app.js keeps its one element private, which is the point of it; a test
+    // asking what the playhead did needs a handle on that same instance.
+    globalThis.__player = this;
+  }
+  addEventListener(event, handler) { this.handlers[event] = handler; }
+  pause() {}
+  load() {}
+  play() { return Promise.resolve(); }
+};
 
 // MediaRecorder and getUserMedia, recording what the controller asked of them.
 const tracks = [];
@@ -108,6 +198,9 @@ Object.defineProperty(globalThis, "navigator", {
 globalThis.__nodes = nodes;
 globalThis.__record = record;
 globalThis.__tracks = tracks;
+globalThis.__audio = audio;
+globalThis.__frames = frames;
+globalThis.__drawn = drawn;
 const settle = () => new Promise((resolve) => setTimeout(resolve, 50));
 globalThis.__settle = settle;
 """
@@ -597,3 +690,349 @@ class TestTheTitleNamesTheFile:
         console.log(JSON.stringify(buildView({ session, scripts: [], state: IDLE })));
         """)
         assert "2/3" in view["title"]
+
+
+class TestTheWaveformArithmetic:
+    """waveform.js holds no canvas and no AudioContext, so its rules are run
+    here directly rather than inferred from what appeared on a screen."""
+
+    def test_every_column_gets_a_peak(self):
+        result = run_node("""
+        import { peaksFromSamples } from "./waveform.js";
+        const samples = Float32Array.from({ length: 8000 }, (_, i) => Math.sin(i / 20));
+        const peaks = peaksFromSamples(samples, 200);
+        console.log(JSON.stringify({
+          columns: peaks.length,
+          allFinite: peaks.every((p) => Number.isFinite(p)),
+          max: Math.max(...peaks),
+        }));
+        """)
+        assert result["columns"] == 200
+        assert result["allFinite"] is True
+        assert result["max"] == pytest.approx(1.0, abs=0.01)
+
+    def test_a_column_reports_its_loudest_sample_not_its_average(self):
+        """Averaging a few hundred samples of speech tends to zero and paints a
+        flat line across a word that is plainly there."""
+        result = run_node("""
+        import { peaksFromSamples } from "./waveform.js";
+        // Alternating +1/-1 averages to zero but peaks at one.
+        const samples = Float32Array.from({ length: 1000 }, (_, i) => (i % 2 ? 1 : -1));
+        console.log(JSON.stringify(peaksFromSamples(samples, 10)));
+        """)
+        assert result == [pytest.approx(1.0)] * 10
+
+    def test_a_clip_shorter_than_the_column_count_still_spans_the_width(self):
+        """Bunching a short take into the first few columns leaves most of the
+        strip blank for a clip that filled it."""
+        result = run_node("""
+        import { peaksFromSamples } from "./waveform.js";
+        const samples = Float32Array.from({ length: 7 }, () => 0.5);
+        const peaks = peaksFromSamples(samples, 200);
+        console.log(JSON.stringify({
+          columns: peaks.length, empty: peaks.filter((p) => p === 0).length,
+        }));
+        """)
+        assert result["columns"] == 200
+        assert result["empty"] == 0
+
+    def test_an_empty_clip_yields_no_peaks_rather_than_throwing(self):
+        result = run_node("""
+        import { peaksFromSamples } from "./waveform.js";
+        console.log(JSON.stringify({
+          empty: peaksFromSamples(new Float32Array(0), 200),
+          missing: peaksFromSamples(null, 200),
+        }));
+        """)
+        assert result == {"empty": [], "missing": []}
+
+    def test_the_live_trace_is_centred_on_the_analysers_zero(self):
+        """getByteTimeDomainData reports unsigned bytes centred on 128; drawing
+        those raw puts silence at the top of the strip, not the middle."""
+        result = run_node("""
+        import { traceFromTimeDomain } from "./waveform.js";
+        const silence = new Uint8Array(64).fill(128);
+        const loud = new Uint8Array(64).fill(255);
+        console.log(JSON.stringify({
+          silence: traceFromTimeDomain(silence, 8),
+          loud: traceFromTimeDomain(loud, 8),
+        }));
+        """)
+        assert result["silence"] == [0] * 8
+        assert all(value > 0.9 for value in result["loud"])
+
+    def test_silence_reads_as_no_level_and_a_full_scale_tone_as_full(self):
+        result = run_node("""
+        import { levelFromTimeDomain } from "./waveform.js";
+        const silence = new Uint8Array(128).fill(128);
+        const full = Uint8Array.from({ length: 128 }, (_, i) => (i % 2 ? 255 : 1));
+        console.log(JSON.stringify({
+          silence: levelFromTimeDomain(silence),
+          full: levelFromTimeDomain(full),
+          none: levelFromTimeDomain(new Uint8Array(0)),
+        }));
+        """)
+        assert result["silence"] == 0
+        assert result["full"] == pytest.approx(1.0, abs=0.01)
+        assert result["none"] == 0
+
+    def test_the_playhead_stays_inside_the_strip(self):
+        """currentTime overruns duration by a frame at the end of a clip, and
+        duration is NaN until the element has metadata - both would otherwise
+        put the playhead off the canvas."""
+        result = run_node("""
+        import { playheadFraction } from "./waveform.js";
+        console.log(JSON.stringify({
+          start: playheadFraction(0, 4),
+          middle: playheadFraction(2, 4),
+          overrun: playheadFraction(4.2, 4),
+          noMetadata: playheadFraction(1, NaN),
+          zero: playheadFraction(1, 0),
+        }));
+        """)
+        assert result == {
+            "start": 0, "middle": 0.5, "overrun": 1, "noMetadata": 0, "zero": 0,
+        }
+
+
+class TestTheLiveWaveformIsTornDown:
+    """The two leaks this feature can cause, both invisible on a desktop: a rAF
+    loop that keeps waking the phone's GPU after the take, and an AudioContext
+    per take walking into the browser's per-page limit."""
+
+    def test_recording_draws_the_incoming_signal(self, live_server):
+        """The feature itself: without this the other three tests would pass on
+        code that simply never starts."""
+        result = drive_app("""
+        __tracks.push({ stop: () => {} });
+        await button("btn-record").handlers.click();
+        await __settle();
+        const strokes = __drawn.filter((call) => call[0] === "stroke").length;
+        await button("btn-record").handlers.click();
+        await __settle();
+        console.log(JSON.stringify({ strokes, opened: __audio.opened }));
+        """, live_server)
+        assert result["opened"] == 1, "no AudioContext was ever opened"
+        assert result["strokes"] > 0, "the live trace was never drawn"
+
+    def test_every_context_opened_is_closed_when_the_take_ends(self, live_server):
+        result = drive_app("""
+        __tracks.push({ stop: () => {} });
+        await button("btn-record").handlers.click();
+        await __settle();
+        await button("btn-record").handlers.click();
+        await __settle();
+        console.log(JSON.stringify({ ...__audio }));
+        """, live_server)
+        assert result["opened"] >= 1
+        assert result["closed"] == result["opened"], "an AudioContext was leaked"
+        assert result["disconnected"] == result["opened"]
+
+    def test_the_animation_loop_stops_when_the_take_stops(self, live_server):
+        """Not merely cancelled once: no frame may still be queued afterwards,
+        which is what a loop that reschedules itself past the cancel leaves."""
+        result = drive_app("""
+        __tracks.push({ stop: () => {} });
+        await button("btn-record").handlers.click();
+        await __settle();
+        await button("btn-record").handlers.click();
+        await __settle();
+        const after = __frames.scheduled;
+        await __settle();
+        console.log(JSON.stringify({
+          cancelled: __frames.cancelled, live: __frames.live.size,
+          grewAfterStop: __frames.scheduled - after,
+        }));
+        """, live_server)
+        assert result["cancelled"] >= 1, "the frame loop was never cancelled"
+        assert result["live"] == 0, "a frame was still queued after the take"
+        assert result["grewAfterStop"] == 0, "the loop kept rescheduling itself"
+
+    def test_ten_takes_do_not_accumulate_contexts(self, live_server):
+        """The limit is per page, so the leak only shows over a session - which
+        is exactly the session a real recording is."""
+        result = drive_app("""
+        __tracks.push({ stop: () => {} });
+        for (let take = 0; take < 10; take += 1) {
+          await button("btn-record").handlers.click();
+          await __settle();
+          await button("btn-record").handlers.click();
+          await __settle();
+        }
+        console.log(JSON.stringify({ ...__audio, live: __frames.live.size }));
+        """, live_server)
+        assert result["opened"] >= 10
+        assert result["closed"] == result["opened"]
+        assert result["live"] == 0
+
+    def test_the_context_is_resumed_because_ios_starts_it_suspended(self, live_server):
+        """An AudioContext created outside a gesture stays suspended and the
+        analyser reports nothing but silence for the whole take."""
+        result = drive_app("""
+        __tracks.push({ stop: () => {} });
+        await button("btn-record").handlers.click();
+        await __settle();
+        await button("btn-record").handlers.click();
+        await __settle();
+        console.log(JSON.stringify({ resumed: __audio.resumed }));
+        """, live_server)
+        assert result["resumed"] >= 1
+
+
+class TestARefusedWaveformStillRecords:
+    """A canvas or a Web Audio failure must cost the user nothing: the take is
+    the work, the strip is a nicety."""
+
+    def test_a_browser_without_web_audio_still_saves_the_take(self, live_server):
+        result = drive_app("""
+        delete globalThis.AudioContext;
+        delete window.AudioContext;
+        __tracks.push({ stop: () => {} });
+        await button("btn-record").handlers.click();
+        await __settle();
+        await button("btn-record").handlers.click();
+        await __settle();
+        console.log(JSON.stringify({ message: button("message").textContent }));
+        """, live_server)
+        assert result["message"].startswith("saved "), result["message"]
+
+    def test_a_canvas_that_refuses_a_context_still_saves_the_take(self, live_server):
+        result = drive_app("""
+        __nodes.get("waveform").getContext = () => { throw new Error("no 2d"); };
+        __tracks.push({ stop: () => {} });
+        await button("btn-record").handlers.click();
+        await __settle();
+        await button("btn-record").handlers.click();
+        await __settle();
+        console.log(JSON.stringify({ message: button("message").textContent }));
+        """, live_server)
+        assert result["message"].startswith("saved "), result["message"]
+
+    def test_an_analyser_that_throws_leaves_no_context_behind(self, live_server):
+        """The failure path is where a leak hides: start() opened the context
+        before the node that threw."""
+        result = drive_app("""
+        AudioContext.prototype.createAnalyser = () => { throw new Error("nope"); };
+        __tracks.push({ stop: () => {} });
+        await button("btn-record").handlers.click();
+        await __settle();
+        await button("btn-record").handlers.click();
+        await __settle();
+        console.log(JSON.stringify({
+          message: button("message").textContent,
+          opened: __audio.opened, closed: __audio.closed,
+        }));
+        """, live_server)
+        assert result["message"].startswith("saved "), result["message"]
+        assert result["closed"] == result["opened"], "a failed start leaked a context"
+
+
+class TestThePlaybackWaveform:
+    """Drawn from the clip fetched over the audio route and decoded on the
+    spot. Nothing about it is stored: dataset.csv keeps the three columns
+    train.py reads, and a cached peak file would need invalidating on every
+    re-record."""
+
+    # A saved take advances the cursor to the next line, the way the terminal
+    # recorder's space-then-down rhythm does, so playing it back means stepping
+    # the cursor up onto the line that now has audio.
+    RECORD_ONE = """
+    __tracks.push({ stop: () => {} });
+    await button("btn-record").handlers.click();
+    await __settle();
+    await button("btn-record").handlers.click();
+    await __settle();
+    button("btn-prev").handlers.click();
+    await __settle();
+    """
+
+    def test_playing_a_take_draws_its_peaks(self, live_server):
+        result = drive_app(self.RECORD_ONE + """
+        __drawn.length = 0;
+        await button("btn-play").handlers.click();
+        await __settle();
+        console.log(JSON.stringify({
+          bars: __drawn.filter((call) => call[0] === "fillRect").length,
+          decoded: __audio.decoded,
+        }));
+        """, live_server)
+        assert result["decoded"] == 1, "the clip was never decoded"
+        assert result["bars"] > 1, "no peaks were drawn"
+
+    def test_the_peaks_come_from_the_clip_the_server_stored(self, live_server):
+        """A decode of zero bytes would still draw something; this pins that
+        real audio was fetched over the audio route."""
+        result = drive_app(self.RECORD_ONE + """
+        const seen = [];
+        const before = globalThis.fetch;
+        globalThis.fetch = (url, options) => {
+          seen.push(String(url));
+          return before(url, options);
+        };
+        await button("btn-play").handlers.click();
+        await __settle();
+        console.log(JSON.stringify({ seen }));
+        """, live_server)
+        audio_gets = [url for url in result["seen"] if "/audio" in url]
+        assert audio_gets, "the clip was never fetched for its waveform"
+        assert all("%2F" not in url for url in audio_gets), audio_gets
+        assert all("?v=" in url for url in audio_gets), "the fetch is not cache-busted"
+
+    def test_the_playhead_advances_with_the_elements_own_clock(self, live_server):
+        """Driven by timeupdate rather than Web Audio: routing the element
+        through createMediaElementSource silences it unless the graph is also
+        wired to destination, which on iOS is how playback gets lost."""
+        result = drive_app(self.RECORD_ONE + """
+        await button("btn-play").handlers.click();
+        await __settle();
+        const player = globalThis.__player;
+        __drawn.length = 0;
+        player.currentTime = 0.5;
+        player.duration = 1.0;
+        player.handlers.timeupdate();
+        const half = __drawn.filter((c) => c[0] === "fillRect").length;
+        console.log(JSON.stringify({ hasHandler: typeof player.handlers.timeupdate, half }));
+        """, live_server)
+        assert result["hasHandler"] == "function", "nothing listens for timeupdate"
+        assert result["half"] > 1, "the playhead redraw drew nothing"
+
+    def test_the_decoding_context_is_closed_after_every_playback(self, live_server):
+        """Playback opens its own short-lived context; ten taps must not leave
+        ten open."""
+        result = drive_app(self.RECORD_ONE + """
+        for (let tap = 0; tap < 10; tap += 1) {
+          await button("btn-play").handlers.click();
+          await __settle();
+        }
+        console.log(JSON.stringify({ opened: __audio.opened, closed: __audio.closed }));
+        """, live_server)
+        assert result["closed"] == result["opened"], "a decode leaked a context"
+
+    def test_a_take_still_plays_when_it_cannot_be_decoded(self, live_server):
+        """The <audio> element decodes the clip itself and may well manage what
+        decodeAudioData refused; a waveform failure must not report one."""
+        result = drive_app(self.RECORD_ONE + """
+        AudioContext.prototype.decodeAudioData = () => { throw new Error("bad codec"); };
+        await button("btn-play").handlers.click();
+        await __settle();
+        console.log(JSON.stringify({ message: button("message").textContent }));
+        """, live_server)
+        assert result["message"].startswith("played "), result["message"]
+
+    def test_a_recording_replaces_the_playback_strip(self, live_server):
+        """The strip shows one thing at a time; a stale set of peaks under a
+        live trace says the mic is hearing a take that finished."""
+        result = drive_app(self.RECORD_ONE + """
+        await button("btn-play").handlers.click();
+        await __settle();
+        await button("btn-record").handlers.click();
+        await __settle();
+        const hiddenDuringRecord = __nodes.get("waveform").hidden;
+        await button("btn-record").handlers.click();
+        await __settle();
+        console.log(JSON.stringify({
+          hiddenDuringRecord, hiddenAfter: __nodes.get("waveform").hidden,
+        }));
+        """, live_server)
+        assert result["hiddenDuringRecord"] is False, "the live trace was hidden"
+        assert result["hiddenAfter"] is True, "the strip stayed up after the take"

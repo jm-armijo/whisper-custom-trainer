@@ -3,9 +3,16 @@
 // The browser counterpart of record_data.py. Sequencing and plumbing only -
 // every rule lives in state.js, every pixel in render.js, every URL in api.js.
 
+import * as analysis from "./audio_analysis.js";
 import * as api from "./api.js";
 import * as mic from "./microphone.js";
 import * as render from "./render.js";
+import {
+  levelFromTimeDomain,
+  peaksFromSamples,
+  playheadFraction,
+  traceFromTimeDomain,
+} from "./waveform.js";
 import {
   IDLE,
   RECORDING,
@@ -36,6 +43,63 @@ const app = {
   // Docked open on a wide screen, closed on a phone where it overlays the text.
   menuOpen: window.matchMedia("(min-width: 40.0625rem)").matches,
 };
+
+// ---------- the live waveform ----------
+//
+// One analyser and at most one animation frame, both owned here. The pair must
+// be torn down together on every path out of a take: a rAF loop left running
+// wakes the phone's GPU sixty times a second for a screen nobody is watching,
+// and a leaked AudioContext counts against a per-page limit the browser will
+// eventually refuse to raise.
+const analyser = new analysis.LiveAnalyser();
+let frame = null;
+
+/** Attach the analyser to the stream microphone.js already opened.
+ *
+ * Called from inside the record tap's handler, never at module load: iOS
+ * creates every AudioContext suspended and resumes one only within the gesture
+ * that asked for it. */
+async function startWaveform() {
+  if (typeof window.requestAnimationFrame !== "function") {
+    return;
+  }
+  const attached = await analyser.start(microphone.stream);
+  if (!attached) {
+    // No Web Audio, or it refused the stream. The take still records; there is
+    // simply nothing to draw, and the strip stays hidden rather than blank.
+    return;
+  }
+  const step = () => {
+    const bytes = analyser.sample();
+    if (!bytes) {
+      // The analyser was closed between scheduling this frame and running it.
+      frame = null;
+      return;
+    }
+    render.drawTrace(dom, traceFromTimeDomain(bytes), levelFromTimeDomain(bytes));
+    frame = window.requestAnimationFrame(step);
+  };
+  try {
+    render.showWaveform(dom, true);
+    frame = window.requestAnimationFrame(step);
+  } catch {
+    // Whatever the canvas did, the take is what matters: drop the waveform and
+    // let the recording carry on rather than failing the whole tap.
+    stopWaveform();
+  }
+}
+
+/** Cancel the frame first, then release the graph: closing the context while a
+ * frame is still queued leaves that frame sampling a dead analyser. */
+function stopWaveform() {
+  if (frame !== null && typeof window.cancelAnimationFrame === "function") {
+    window.cancelAnimationFrame(frame);
+  }
+  frame = null;
+  analyser.close();
+  render.clearWaveform(dom);
+  render.showWaveform(dom, false);
+}
 
 function setMenu(open) {
   app.menuOpen = open;
@@ -133,8 +197,14 @@ async function startRecording() {
     say("this browser cannot capture audio - needs getUserMedia over https or localhost");
     return;
   }
+  // A new take replaces whatever the playback strip was showing.
+  stopPlaybackWaveform();
   await guard(async () => {
     await microphone.start();
+    // After the recorder is running, so a browser that refuses the analyser
+    // costs the take nothing; awaited inside the tap's stack to keep iOS's
+    // gesture, which is what lets resume() settle.
+    await startWaveform();
     app.state = RECORDING;
     app.tick = 0;
     app.startedAt = Date.now();
@@ -150,6 +220,11 @@ async function startRecording() {
 async function stopRecording() {
   clearInterval(app.timer);
   app.timer = null;
+  // Before awaiting the blob, not after: the analyser is watching a stream that
+  // is about to end, and every frame between here and the upload landing paints
+  // a trace of silence. Tearing down first is also what guarantees the loop
+  // stops even if stop() rejects.
+  stopWaveform();
   const blob = await microphone.stop();
 
   // Paint UPLOADING before awaiting the POST, not after. Setting the state and
@@ -228,8 +303,68 @@ function audioElement() {
   if (!player) {
     player = new Audio();
     player.addEventListener("error", () => say("could not play that take"));
+    // Bound once, to the one element. The playhead is driven from the element's
+    // own clock rather than from Web Audio: routing it through
+    // createMediaElementSource would silence it unless the graph were also
+    // wired to destination, and on iOS that is the quickest way to lose the
+    // playback the reused element exists to protect.
+    player.addEventListener("timeupdate", drawPlayhead);
+    player.addEventListener("durationchange", drawPlayhead);
+    player.addEventListener("ended", drawPlayhead);
   }
   return player;
+}
+
+// The peaks currently on screen, and the take they belong to.
+//
+// The token is the guard against a slow decode: taps land faster than a fetch
+// and decode complete, so an earlier take's peaks can arrive after a later tap
+// has already started drawing. Only the newest tap's token may paint.
+let playbackPeaks = null;
+let playbackToken = 0;
+
+function stopPlaybackWaveform() {
+  playbackToken += 1;
+  playbackPeaks = null;
+  render.clearWaveform(dom);
+  render.showWaveform(dom, false);
+}
+
+function drawPlayhead() {
+  if (!playbackPeaks || !player) {
+    return;
+  }
+  render.drawPeaks(dom, playbackPeaks, playheadFraction(player.currentTime, player.duration));
+}
+
+/** Fetch the clip, decode it, and draw its peaks.
+ *
+ * Deliberately not awaited by play(): the waveform must never delay the play()
+ * call, which has to reach the element in the same turn as the tap to keep
+ * iOS's permission. It paints whenever it is ready, a beat behind the audio.
+ *
+ * The peaks are computed from the wav on every playback and never stored -
+ * dataset.csv keeps the three columns train.py reads, and a cached peak file
+ * would be one more artifact to invalidate on a re-record.
+ */
+async function drawPlaybackWaveform(name, index, token) {
+  if (!analysis.isSupported()) {
+    return;
+  }
+  try {
+    const buffer = await api.fetchAudio(name, index, app.version);
+    const samples = await analysis.decodeChannel(buffer);
+    // A newer tap owns the strip now; this decode is for a take already gone.
+    if (token !== playbackToken || !samples) {
+      return;
+    }
+    playbackPeaks = peaksFromSamples(samples);
+    render.showWaveform(dom, true);
+    drawPlayhead();
+  } catch {
+    // The take plays regardless: the <audio> element fetches the clip itself
+    // and does not care that this second fetch or decode failed.
+  }
 }
 
 function play() {
@@ -244,6 +379,12 @@ function play() {
   // calling play() in the same turn is what keeps the gesture's permission.
   element.src = api.audioUrl(app.session.name, index, app.version);
   element.load();
+
+  // Invalidates any in-flight decode, then claims the strip for this tap. The
+  // fetch is started without awaiting so play() below still runs in this turn.
+  stopPlaybackWaveform();
+  drawPlaybackWaveform(app.session.name, index, playbackToken);
+
   element.play().then(
     () => say(`played line ${index + 1}`),
     (error) => {

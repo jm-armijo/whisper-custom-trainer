@@ -34,6 +34,10 @@
     </div>
 
     <footer class="footer">
+      <!-- Purely visual: what it shows is announced through the live region
+           below, so a screen-reader user loses nothing by not seeing it. -->
+      <canvas id="waveform" class="waveform" aria-hidden="true" hidden></canvas>
+
       <p id="message" class="message" role="status" aria-live="polite"></p>
 
       <div id="status-bar" class="status-bar">

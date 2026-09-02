@@ -35,6 +35,15 @@
   --status-recording-bg: var(--ansi-red);
   --status-recording-fg: #14161a;
 
+  /* The waveform strip. render.js reads these off the canvas rather than
+   * holding hex values of its own, so the palette stays one table. */
+  --waveform-axis: var(--border);
+  --waveform-live: var(--ansi-red);
+  --waveform-level: var(--ansi-green-bright);
+  --waveform-peaks: var(--ansi-blue);
+  --waveform-played: var(--ansi-green-bright);
+  --waveform-playhead: var(--ansi-yellow);
+
   --tap-target: 46px;
   --font-ui: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --font-read: Georgia, "Iowan Old Style", "Noto Serif", serif;
@@ -256,6 +265,17 @@ body {
   background: var(--bg-sunken);
   border-top: 1px solid var(--border);
   padding-bottom: env(safe-area-inset-bottom);
+}
+
+/* A fixed strip rather than one that appears and reflows the page: the canvas
+ * is hidden between takes, and a footer that changed height mid-tap would move
+ * the record button out from under the thumb already on its way down. */
+.waveform {
+  display: block;
+  width: 100%;
+  height: 56px;
+  background: var(--bg-sunken);
+  border-top: 1px solid var(--border);
 }
 
 .message {

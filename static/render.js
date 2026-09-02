@@ -8,6 +8,7 @@ import { RECORDING, UPLOADING, blinkGlyph, elapsedLabel, isBusy } from "./state.
 
 export function elements() {
   return {
+    waveform: document.getElementById("waveform"),
     title: document.getElementById("title"),
     menu: document.getElementById("script-menu"),
     menuToggle: document.getElementById("menu-toggle"),
@@ -160,6 +161,154 @@ function drawControls(dom, view) {
   dom.prevButton.disabled = busy || !hasScript || view.cursor === 0;
   dom.nextButton.disabled =
     busy || !hasScript || view.cursor >= view.chunks.length - 1;
+}
+
+// ---------- waveform canvas ----------
+//
+// Pixels only. The numbers drawn here are computed by waveform.js and fetched
+// by api.js; this decides bar widths and colours from them and nothing else.
+//
+// Every entry point tolerates a missing canvas or a missing 2D context. On a
+// browser that cannot give one, the recorder keeps working with a blank strip
+// where the trace would be - a canvas failure must never cost a take.
+
+/** The drawing surface, sized to its CSS box in device pixels, or null.
+ *
+ * Resolved on every draw rather than cached: the canvas is laid out by CSS and
+ * a phone rotating changes its box without any event this module sees. */
+function surface(canvas) {
+  if (!canvas || typeof canvas.getContext !== "function") {
+    return null;
+  }
+  let context = null;
+  try {
+    context = canvas.getContext("2d");
+  } catch {
+    return null;
+  }
+  if (!context) {
+    return null;
+  }
+
+  const ratio = Math.min(window.devicePixelRatio || 1, 2);
+  const box = canvas.getBoundingClientRect();
+  const width = Math.max(Math.round((box.width || canvas.clientWidth || 0) * ratio), 1);
+  const height = Math.max(Math.round((box.height || canvas.clientHeight || 0) * ratio), 1);
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width;
+    canvas.height = height;
+  }
+  return { context, width, height };
+}
+
+/** The colours the strip is painted in, read from the stylesheet rather than
+ * spelled here, so the palette stays one table in style.css. */
+function ink(canvas, name, fallback) {
+  const styles = window.getComputedStyle ? window.getComputedStyle(canvas) : null;
+  const value = styles ? styles.getPropertyValue(name).trim() : "";
+  return value || fallback;
+}
+
+export function showWaveform(dom, visible) {
+  if (dom.waveform) {
+    dom.waveform.hidden = !visible;
+  }
+}
+
+export function clearWaveform(dom) {
+  const target = surface(dom.waveform);
+  if (target) {
+    target.context.clearRect(0, 0, target.width, target.height);
+  }
+}
+
+/** One live analyser frame: a trace of -1..1 offsets about the centre line. */
+export function drawTrace(dom, trace, level = 0) {
+  const target = surface(dom.waveform);
+  if (!target) {
+    return;
+  }
+  const { context, width, height } = target;
+  const middle = height / 2;
+  context.clearRect(0, 0, width, height);
+
+  // A quiet mic is the failure this whole feature exists to make visible, so
+  // the centre line is drawn even when there is no signal at all: a blank
+  // canvas reads as "broken", a flat line reads as "hearing nothing".
+  context.strokeStyle = ink(dom.waveform, "--waveform-axis", "#2b3039");
+  context.lineWidth = 1;
+  context.beginPath();
+  context.moveTo(0, middle);
+  context.lineTo(width, middle);
+  context.stroke();
+
+  if (!trace || trace.length === 0) {
+    return;
+  }
+
+  context.strokeStyle = ink(dom.waveform, "--waveform-live", "#e01b24");
+  context.lineWidth = Math.max(Math.round(height / 40), 1);
+  context.lineJoin = "round";
+  context.beginPath();
+  trace.forEach((offset, column) => {
+    const x = (column / Math.max(trace.length - 1, 1)) * width;
+    const y = middle - offset * middle * 0.92;
+    if (column === 0) {
+      context.moveTo(x, y);
+    } else {
+      context.lineTo(x, y);
+    }
+  });
+  context.stroke();
+
+  drawLevelBar(context, dom.waveform, width, height, level);
+}
+
+/** A thin loudness bar along the foot of the strip. The trace alone is hard to
+ * read at a glance on a phone held at reading distance; the bar answers "is it
+ * hearing me" from the corner of an eye. */
+function drawLevelBar(context, canvas, width, height, level) {
+  const bar = Math.max(Math.round(height / 16), 2);
+  context.fillStyle = ink(canvas, "--waveform-level", "#33d17a");
+  context.fillRect(0, height - bar, width * Math.min(Math.max(level, 0), 1), bar);
+}
+
+/** A saved clip's peaks, with the playhead at `progress` (0..1).
+ *
+ * Peaks are mirrored about the centre line: the pair of bars is the shape a
+ * reader recognises as a waveform, where the upper half alone reads as a chart.
+ */
+export function drawPeaks(dom, peaks, progress = 0) {
+  const target = surface(dom.waveform);
+  if (!target) {
+    return;
+  }
+  const { context, width, height } = target;
+  const middle = height / 2;
+  context.clearRect(0, 0, width, height);
+
+  if (!peaks || peaks.length === 0) {
+    return;
+  }
+
+  const played = ink(dom.waveform, "--waveform-played", "#33d17a");
+  const ahead = ink(dom.waveform, "--waveform-peaks", "#62a0ea");
+  const step = width / peaks.length;
+  const barWidth = Math.max(step * 0.7, 1);
+  const head = progress * width;
+
+  peaks.forEach((peak, column) => {
+    const x = column * step;
+    // Coloured by position rather than redrawn per frame: the playhead moving
+    // is the whole animation, and repainting only its colour keeps a timeupdate
+    // (four a second on most browsers) cheap.
+    context.fillStyle = x + step / 2 <= head ? played : ahead;
+    const half = Math.max(peak * middle * 0.92, 0.5);
+    context.fillRect(x, middle - half, barWidth, half * 2);
+  });
+
+  context.fillStyle = ink(dom.waveform, "--waveform-playhead", "#e5a50a");
+  context.fillRect(Math.min(head, width - 1), 0, Math.max(Math.round(width / 400), 1), height);
 }
 
 /** Two classes because the two layouts disagree about the resting state: on a

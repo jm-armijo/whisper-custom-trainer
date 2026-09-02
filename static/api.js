@@ -121,3 +121,15 @@ export async function deleteChunk(name, index) {
 export function audioUrl(name, index, version = 0) {
   return `${ENDPOINTS.chunkAudio(name, index)}?v=${version}`;
 }
+
+/** The stored clip's bytes, for drawing its waveform.
+ *
+ * The waveform is computed from the wav on every playback and never stored:
+ * dataset.csv holds the three columns train.py reads and nothing else, and a
+ * sidecar of peaks would be one more thing to keep in step with a re-record.
+ * The same URL the <audio> element plays, so both sides see the same take.
+ */
+export async function fetchAudio(name, index, version = 0) {
+  const response = await request(audioUrl(name, index, version));
+  return response.arrayBuffer();
+}
