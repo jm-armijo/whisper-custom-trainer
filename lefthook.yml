@@ -1,6 +1,20 @@
 # Commit gate. Every command runs against the venv interpreter directly rather
 # than a bare `pytest`/`ruff`, so the hook works whether or not the venv is
 # activated in the shell that runs git.
+#
+# Unit only, deliberately. The integration and e2e tiers ran here too, which
+# put ~4min on every commit - most of it the e2e tier driving a pty in real
+# time, whose blink-interval timing cannot be shortened without testing
+# something other than what ships. That cost was paid on every commit
+# including ones that touch no Python at all, and the usual result was running
+# a suite that had just been run by hand seconds earlier.
+#
+# The trade is real and worth naming: nothing now stops a commit that breaks
+# the integration or e2e tier. Run the full suite yourself before pushing, and
+# after any change to the recorder server, the curses UI, or the pipeline
+# boundary:
+#
+#   python -m pytest -m "unit or integration or e2e"
 pre-commit:
   parallel: false
   commands:
@@ -9,10 +23,3 @@ pre-commit:
       run: venv/bin/ruff check .
     unit:
       run: venv/bin/python -m pytest -q
-    integration:
-      run: venv/bin/python -m pytest -m integration -q
-    # The whole e2e tier. Every case drives a pty in real time, so this is the
-    # slow half of the gate (~4min all in) - accepted deliberately: a commit is
-    # only green when every automated test has actually run against it.
-    e2e:
-      run: venv/bin/python -m pytest -m e2e -q

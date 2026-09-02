@@ -48,13 +48,19 @@ ruff check . --fix                            # apply the safe fixes
 
 Hooks are managed by `lefthook` (`lefthook.yml`), installed by `setup.sh`:
 
-- **pre-commit** — `ruff`, then the unit, integration and e2e tiers: every
-  automated test, so a commit is green only when the whole suite has run
-  against it. Budget ~4-5min per commit; most of it is the e2e tier driving a
-  pty in real time, whose blink-interval timing cannot be shortened without
-  testing something other than what ships.
+- **pre-commit** — `ruff`, then the unit tier only (~4s). The integration and
+  e2e tiers ran here too and cost ~4-5min per commit, most of it the e2e tier
+  driving a pty in real time; that was paid on every commit, including ones
+  touching no Python, and usually re-ran a suite that had just been run by
+  hand.
 
-There is no pre-push hook — the commit gate is the only gate.
+There is no pre-push hook, so **nothing automatically runs the slow tiers**.
+Run them yourself before pushing, and after any change to the recorder server,
+the curses UI, or the pipeline boundary:
+
+```bash
+python -m pytest -m "unit or integration or e2e"        # ~4min
+```
 
 `tests/e2e/test_pipeline.py` would download `whisper-small` and train an
 adapter, but it skips itself whenever the exports and vendored repos it needs
