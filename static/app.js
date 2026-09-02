@@ -214,7 +214,23 @@ async function redo() {
   });
 }
 
+// One element reused for every take, created once and kept.
+//
+// iOS grants an audio element permission to play only when play() is reached
+// inside a user gesture, and that permission belongs to the element, not the
+// page: a fresh `new Audio(...)` per tap starts unpermitted, so its play()
+// promise rejects with NotAllowedError and nothing is heard. Reusing one
+// element that was unlocked on the first tap is what makes playback work on a
+// phone at all.
 let player = null;
+
+function audioElement() {
+  if (!player) {
+    player = new Audio();
+    player.addEventListener("error", () => say("could not play that take"));
+  }
+  return player;
+}
 
 function play() {
   if (!app.session || !app.session.isRecorded(app.session.cursor)) {
@@ -222,13 +238,25 @@ function play() {
     return;
   }
   const index = app.session.cursor;
-  if (player) {
-    player.pause();
-  }
-  player = new Audio(api.audioUrl(app.session.name, index, app.version));
-  player.addEventListener("error", () => say("could not play that take"));
-  player.play().catch((error) => say(error.message));
-  say(`played line ${index + 1}`);
+  const element = audioElement();
+  element.pause();
+  // Assigned synchronously inside the gesture, then played: setting src and
+  // calling play() in the same turn is what keeps the gesture's permission.
+  element.src = api.audioUrl(app.session.name, index, app.version);
+  element.load();
+  element.play().then(
+    () => say(`played line ${index + 1}`),
+    (error) => {
+      // A second tap calls load(), which rejects the first tap's still-pending
+      // play() with AbortError. That older promise settling must not report a
+      // failure over the newer take that is playing correctly - with one
+      // reused element both handlers run, and the last to settle wins.
+      if (error.name === "AbortError") return;
+      say(error.name === "NotAllowedError"
+        ? "tap play again to allow audio"
+        : `could not play that take: ${error.message}`);
+    },
+  );
 }
 
 function bindControls() {

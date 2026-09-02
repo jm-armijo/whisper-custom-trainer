@@ -21,6 +21,7 @@ import json
 import os
 import re
 import shutil
+import ssl
 import subprocess
 import sys
 from http import HTTPStatus
@@ -34,6 +35,11 @@ import recorder_state as rs
 import whisper_pipeline as wp
 
 STATIC_DIR = wp.PROJECT_ROOT / "static"
+
+# How long a peer may take to complete a TLS handshake before its worker
+# thread is released. Generous for a phone on slow wifi, finite for a
+# connection that will never finish one.
+HANDSHAKE_TIMEOUT_SECONDS = 15
 # Reading material ships with the repo so a fresh clone (or the Pi) has
 # something to record; scripts/ was gitignored and arrived empty.
 SCRIPTS_DIR = wp.PROJECT_ROOT / "training-text"
@@ -384,6 +390,29 @@ class RecorderHandler(SimpleHTTPRequestHandler):
         else:
             self._serve_static()
 
+    def do_HEAD(self):
+        """A HEAD is a GET whose body is discarded.
+
+        Inherited from SimpleHTTPRequestHandler it resolves against static_dir
+        instead, so HEAD on an API path 404s while GET on the same path serves
+        200. Media clients probe with HEAD as well as Range to learn a clip's
+        size before playing, and a 404 to that probe stops playback for the
+        same silent reason Accept-Ranges was added to prevent.
+        """
+        self._head_only = True
+        try:
+            self.do_GET()
+        finally:
+            self._head_only = False
+
+    # Set only for the duration of a HEAD, so the write below stays a plain
+    # GET write on every other request.
+    _head_only = False
+
+    def _write_body(self, payload):
+        if not self._head_only:
+            self.wfile.write(payload)
+
     def do_POST(self):
         route, name, index = parse_path(self.path)
         if route != "chunk":
@@ -439,13 +468,26 @@ class RecorderHandler(SimpleHTTPRequestHandler):
             self._error(self._status_for(error), str(error))
             return
 
-        self.send_response(HTTPStatus.OK)
+        total = len(payload)
+        start, end = parse_range(self.headers.get("Range"), total)
+        partial = start is not None
+        if partial:
+            payload = payload[start:end + 1]
+
+        self.send_response(HTTPStatus.PARTIAL_CONTENT if partial else HTTPStatus.OK)
         self.send_header("Content-Type", "audio/wav")
         self.send_header("Content-Length", str(len(payload)))
+        # Safari on iOS probes an <audio> source with `Range: bytes=0-1` and
+        # refuses to play at all if the reply is a plain 200 with the whole
+        # body - silently, with no error on the page. Advertising byte ranges
+        # and honouring them is what makes playback work on a phone.
+        self.send_header("Accept-Ranges", "bytes")
+        if partial:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{total}")
         # A re-recorded take must not play from cache on the phone.
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
-        self.wfile.write(payload)
+        self._write_body(payload)
 
     def _serve_static(self):
         if not Path(self.config.static_dir).is_dir():
@@ -457,7 +499,17 @@ class RecorderHandler(SimpleHTTPRequestHandler):
             # away any ../ in the request, so stripping the prefix cannot be
             # used to reach outside the asset directory.
             self.path = self.path[len(STATIC_PREFIX) - 1:]
-        super().do_GET()
+        if not self._head_only:
+            super().do_GET()
+            return
+
+        # The parent writes the body itself rather than through _write_body, so
+        # a HEAD sends the headers from send_head() and stops there. Its own
+        # do_HEAD is not reused: it re-resolves self.path, which the prefix
+        # strip above has already rewritten.
+        handle = self.send_head()
+        if handle:
+            handle.close()
 
     def _send_json(self, status, payload):
         body = json.dumps(payload).encode("utf8")
@@ -465,7 +517,7 @@ class RecorderHandler(SimpleHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(body)
+        self._write_body(body)
 
     def _error(self, status, message):
         # 'message' rather than 'error': the client renders it verbatim, and
@@ -477,10 +529,106 @@ class RecorderHandler(SimpleHTTPRequestHandler):
         sys.stderr.write(f"{self.command} {self.path} - {fmt % args}\n")
 
 
-def build_server(config, host=DEFAULT_HOST, port=DEFAULT_PORT):
-    """A configured, unstarted server, so tests can bind an ephemeral port."""
+def parse_range(header, size):
+    """(start, end) for a single `bytes=` range, or (None, None).
+
+    Only the one-range form browsers actually send is honoured; anything else
+    - multiple ranges, a suffix past the end, an unparseable header - falls
+    back to serving the whole body, which is a valid response to any Range.
+    """
+    if not header:
+        return (None, None)
+
+    match = re.fullmatch(r"bytes=(\d*)-(\d*)", header.strip())
+    if not match:
+        return (None, None)
+
+    first, last = match.group(1), match.group(2)
+    if first:
+        start = int(first)
+        end = int(last) if last else size - 1
+    elif last:
+        # A suffix range ("-500") counts back from the end.
+        start = max(0, size - int(last))
+        end = size - 1
+    else:
+        return (None, None)
+
+    end = min(end, size - 1)
+    if start > end or start >= size:
+        return (None, None)
+    return (start, end)
+
+
+def build_server(config, host=DEFAULT_HOST, port=DEFAULT_PORT, certificate=None):
+    """A configured, unstarted server, so tests can bind an ephemeral port.
+
+    With a certificate the listening socket is wrapped in TLS. That is the
+    whole of what HTTPS costs here: the browser withholds getUserMedia from a
+    page served over plain HTTP to anything but localhost, so recording from a
+    phone needs the scheme, not any change to how a request is handled.
+    """
     handler = type("BoundRecorderHandler", (RecorderHandler,), {"config": config})
-    return ThreadingHTTPServer((host, port), handler)
+    if not certificate:
+        return ThreadingHTTPServer((host, port), handler)
+
+    server = TlsHTTPServer((host, port), handler)
+    server.context = tls_context(certificate)
+    return server
+
+
+class TlsHTTPServer(ThreadingHTTPServer):
+    """An HTTPS server that handshakes on the worker thread.
+
+    Wrapping the *listening* socket instead puts the handshake inside
+    get_request(), which socketserver runs on the single accept thread before
+    it hands the connection to a worker - so one client that opens a TCP
+    connection and then says nothing blocks every other request until it goes
+    away. A port scanner or a phone that sleeps on Safari's certificate
+    interstitial is enough to do it. Wrapping per connection keeps the
+    handshake on the thread that already exists to be blocked, and the timeout
+    bounds how long a silent peer can hold that one thread.
+    """
+
+    context = None
+
+    def process_request_thread(self, request, client_address):
+        """Handshake here, on the worker, never on the accept thread.
+
+        get_request() is the wrong seam even though it is where the socket is
+        born: socketserver calls it on the accept thread and spawns the worker
+        only afterwards, so wrapping there serialises handshakes exactly as
+        wrapping the listener does.
+        """
+        try:
+            request.settimeout(HANDSHAKE_TIMEOUT_SECONDS)
+            request = self.context.wrap_socket(request, server_side=True)
+        except OSError:
+            # A peer that never completes a handshake - a scanner, or a phone
+            # sitting on the certificate warning - is not an error worth
+            # logging a traceback for; the thread simply ends.
+            self.shutdown_request(request)
+            return
+        super().process_request_thread(request, client_address)
+
+
+def tls_context(certificate):
+    """An SSL context for a mkcert-issued certificate and its key.
+
+    `certificate` names the .pem; the key is its `-key.pem` sibling, which is
+    how mkcert names the pair. Both are checked here so a missing or misnamed
+    file fails at startup naming the path, rather than as a handshake error on
+    the phone with nothing in the server log.
+    """
+    certificate = Path(certificate)
+    key = certificate.with_name(f"{certificate.stem}-key{certificate.suffix}")
+    for path in (certificate, key):
+        if not path.is_file():
+            raise wp.PipelineError(f"TLS file not found: {path}")
+
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(certificate, key)
+    return context
 
 
 def main():
@@ -494,8 +642,9 @@ def main():
     config.audio_dir.mkdir(parents=True, exist_ok=True)
     config.csv_path.parent.mkdir(parents=True, exist_ok=True)
 
-    server = build_server(config, args.host, args.port)
-    print(f"Recorder on http://{args.host}:{args.port}  scripts={config.scripts_dir}")
+    server = build_server(config, args.host, args.port, args.cert)
+    scheme = "https" if args.cert else "http"
+    print(f"Recorder on {scheme}://{args.host}:{args.port}  scripts={config.scripts_dir}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -511,6 +660,10 @@ def parse_arguments():
     parser.add_argument("--csv", type=Path, default=wp.DATASET_CSV)
     parser.add_argument("--out-dir", type=Path, default=wp.AUDIO_DIR)
     parser.add_argument("--static", type=Path, default=STATIC_DIR)
+    # A phone will not open the microphone over plain HTTP; point this at a
+    # mkcert-issued .pem to serve the page over TLS instead.
+    parser.add_argument("--cert", type=Path,
+                        default=os.environ.get("RECORDER_CERT") or None)
     return parser.parse_args()
 
 

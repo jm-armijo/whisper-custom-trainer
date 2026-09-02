@@ -362,3 +362,43 @@ class TestScriptsDirectoryDefault:
 
     def test_the_default_directory_is_committed_to_the_repo(self):
         assert srv.SCRIPTS_DIR.is_dir(), "training-text/ must ship with the repo"
+
+
+class TestRangeParsing:
+    """Safari probes an <audio> source with a Range header and will not play
+    at all if the server answers a plain 200 with the whole body."""
+
+    def test_no_header_means_the_whole_body(self):
+        assert srv.parse_range(None, 1000) == (None, None)
+
+    def test_the_ios_probe_asks_for_the_first_two_bytes(self):
+        assert srv.parse_range("bytes=0-1", 1000) == (0, 1)
+
+    def test_an_open_ended_range_runs_to_the_last_byte(self):
+        assert srv.parse_range("bytes=500-", 1000) == (500, 999)
+
+    def test_a_suffix_range_counts_back_from_the_end(self):
+        assert srv.parse_range("bytes=-500", 1000) == (500, 999)
+
+    def test_a_suffix_longer_than_the_file_starts_at_zero(self):
+        assert srv.parse_range("bytes=-5000", 1000) == (0, 999)
+
+    def test_an_end_past_the_file_is_clamped(self):
+        assert srv.parse_range("bytes=0-9999", 1000) == (0, 999)
+
+    def test_a_start_past_the_file_falls_back_to_the_whole_body(self):
+        assert srv.parse_range("bytes=2000-", 1000) == (None, None)
+
+    def test_an_inverted_range_falls_back_to_the_whole_body(self):
+        assert srv.parse_range("bytes=900-100", 1000) == (None, None)
+
+    def test_an_unparseable_header_falls_back_to_the_whole_body(self):
+        """Serving everything is a valid answer to any Range, so a header we
+        do not understand must not become an error."""
+        assert srv.parse_range("bytes=abc", 1000) == (None, None)
+        assert srv.parse_range("items=0-1", 1000) == (None, None)
+
+    def test_multiple_ranges_fall_back_to_the_whole_body(self):
+        """Browsers do not send these for audio; a multipart reply is not worth
+        building for a case that does not arise."""
+        assert srv.parse_range("bytes=0-1,5-6", 1000) == (None, None)

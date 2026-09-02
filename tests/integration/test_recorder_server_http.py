@@ -440,3 +440,113 @@ class TestTheRealPageLoads:
                 if call(f"{real_assets_server}{base}/{imported}")[0] != 200:
                     broken.append(imported)
         assert broken == []
+
+
+class TestAudioPlaysOnAPhone:
+    """The clip route as Safari drives it.
+
+    iOS sends `Range: bytes=0-1` before playing an <audio> source and refuses
+    to play when the answer is a plain 200 carrying the whole file. That
+    failure is silent on the page, so it is asserted here on the wire.
+    """
+
+    def _record(self, server):
+        call(f"{server.base}/api/scripts/es/a.txt/chunks/0",
+             method="POST", body=wav_bytes(seconds=1.0), content_type="audio/wav")
+        return f"{server.base}/api/scripts/es/a.txt/chunks/0/audio"
+
+    def test_a_range_request_is_answered_partial(self, server):
+        url = self._record(server)
+        request = urllib.request.Request(url, headers={"Range": "bytes=0-1"})
+        with urllib.request.urlopen(request) as response:
+            assert response.status == 206
+            assert len(response.read()) == 2
+
+    def test_the_partial_reply_names_the_range_and_total(self, server):
+        url = self._record(server)
+        request = urllib.request.Request(url, headers={"Range": "bytes=0-1"})
+        with urllib.request.urlopen(request) as response:
+            total = response.headers["Content-Range"].split("/")[1]
+            assert response.headers["Content-Range"].startswith("bytes 0-1/")
+            assert int(total) > 2
+
+    def test_byte_ranges_are_advertised(self, server):
+        """Without this header Safari does not bother asking."""
+        url = self._record(server)
+        with urllib.request.urlopen(url) as response:
+            assert response.headers["Accept-Ranges"] == "bytes"
+
+    def test_a_plain_request_still_returns_the_whole_clip(self, server):
+        url = self._record(server)
+        with urllib.request.urlopen(url) as response:
+            assert response.status == 200
+            assert response.read().startswith(b"RIFF")
+
+    def test_a_tail_range_returns_the_end_of_the_clip(self, server):
+        """What a seek to the end of the scrubber asks for."""
+        url = self._record(server)
+        whole = urllib.request.urlopen(url).read()
+        request = urllib.request.Request(url, headers={"Range": "bytes=-100"})
+        with urllib.request.urlopen(request) as response:
+            assert response.status == 206
+            assert response.read() == whole[-100:]
+
+    def test_a_mid_range_matches_that_slice_of_the_file(self, server):
+        url = self._record(server)
+        whole = urllib.request.urlopen(url).read()
+        request = urllib.request.Request(url, headers={"Range": "bytes=100-199"})
+        with urllib.request.urlopen(request) as response:
+            assert response.read() == whole[100:200]
+
+
+class TestHeadIsAnsweredLikeGet:
+    """Media clients probe with HEAD as well as Range to learn a clip's size.
+
+    Inherited from SimpleHTTPRequestHandler, HEAD resolves against static_dir,
+    so an API path 404s while GET on that same path serves 200 - and a client
+    that probes with HEAD never plays.
+    """
+
+    def _record(self, server):
+        call(f"{server.base}/api/scripts/es/a.txt/chunks/0",
+             method="POST", body=wav_bytes(seconds=1.0), content_type="audio/wav")
+        return f"{server.base}/api/scripts/es/a.txt/chunks/0/audio"
+
+    def test_head_on_a_clip_is_not_a_not_found(self, server):
+        url = self._record(server)
+        request = urllib.request.Request(url, method="HEAD")
+        with urllib.request.urlopen(request) as response:
+            assert response.status == 200
+
+    def test_head_reports_the_size_without_the_body(self, server):
+        url = self._record(server)
+        length = len(urllib.request.urlopen(url).read())
+
+        request = urllib.request.Request(url, method="HEAD")
+        with urllib.request.urlopen(request) as response:
+            assert int(response.headers["Content-Length"]) == length
+            assert response.read() == b""
+
+    def test_head_advertises_byte_ranges(self, server):
+        url = self._record(server)
+        request = urllib.request.Request(url, method="HEAD")
+        with urllib.request.urlopen(request) as response:
+            assert response.headers["Accept-Ranges"] == "bytes"
+
+    def test_head_on_the_script_list_matches_get(self, server):
+        request = urllib.request.Request(f"{server.base}/api/scripts", method="HEAD")
+        with urllib.request.urlopen(request) as response:
+            assert response.status == 200
+            assert response.read() == b""
+
+    def test_head_on_a_static_asset_still_works(self, server, tmp_path):
+        """The static route writes its own body, so it takes the other path."""
+        static = tmp_path / "static"
+        static.mkdir(exist_ok=True)
+        (static / "probe.js").write_text("export const x = 1;\n", encoding="utf8")
+
+        request = urllib.request.Request(f"{server.base}/static/probe.js", method="HEAD")
+        with urllib.request.urlopen(request) as response:
+            assert response.status == 200
+            assert response.read() == b""
+            assert int(response.headers["Content-Length"]) > 0

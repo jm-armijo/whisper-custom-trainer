@@ -218,6 +218,45 @@ language, and a mislabelled row poisons the bilingual adapter. Scripts are
 addressed by that qualified name (`es/general.txt`), so the same filename can
 appear under both languages.
 
+### HTTPS, which the phone's microphone requires
+
+`--host` alone is not enough to record from a phone. Browsers only expose
+`getUserMedia` in a **secure context**: `http://localhost` counts, an `http://`
+LAN address does not. The page loads, the microphone never opens.
+
+`mkcert` issues a certificate your own devices actually trust, so there is no
+warning to tap through — and Safari refuses the microphone on some self-signed
+certificates even after you accept the warning, which is why a plain
+`openssl` certificate is not enough here.
+
+```bash
+brew install mkcert
+mkcert -install                       # local CA, once per machine
+mkcert localhost 127.0.0.1 192.168.1.42     # your LAN address as the last name
+```
+
+That writes `localhost+2.pem` and `localhost+2-key.pem`. Pass the first one;
+the key is found beside it by name, so the pair moves as a unit:
+
+```bash
+venv/bin/python recorder_server.py --cert localhost+2.pem
+```
+
+Without `--cert` the server stays plain HTTP, which is all the `localhost` dev
+loop needs. This flag is for running the server **directly**; the container
+does not carry a certificate (see the container section below).
+
+**On the phone**, install the CA once: `mkcert -CAROOT` prints the directory
+holding `rootCA.pem`. AirDrop or mail that file to the device and install it —
+on iOS that is two steps, Settings → Profile Downloaded → Install, and then
+Settings → General → About → Certificate Trust Settings, where the certificate
+must be switched on explicitly. Android installs it under Settings → Security →
+Encryption & credentials → Install a certificate → CA certificate. Then browse
+to `https://<lan-address>:8080`.
+
+The certificate names the addresses it is valid for, so a box whose LAN address
+changes needs a new one. Give it a DHCP reservation and this is a one-off.
+
 ### Reaching the box from the phone
 
 `--host` is the whole story. The default `0.0.0.0` listens on every interface,

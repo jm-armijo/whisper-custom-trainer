@@ -112,3 +112,37 @@ class TestNoExternalDependencies:
             text = path.read_text(encoding="utf8")
             assert "http://" not in text, path
             assert "https://" not in text, path
+
+
+class TestPlaybackSurvivesIosGesturePolicy:
+    """iOS ties permission to play to the element that was live during the
+    user's tap. A fresh Audio object per tap is unpermitted, so its play()
+    promise rejects with NotAllowedError and the phone stays silent - which is
+    invisible from the desktop, where every approach works."""
+
+    def test_one_audio_element_is_reused(self):
+        # Comment lines are dropped first: this file explains the policy in
+        # prose that names the very construction it forbids.
+        code = "\n".join(
+            line for line in APP.read_text(encoding="utf8").splitlines()
+            if not line.lstrip().startswith("//")
+        )
+        constructions = re.findall(r"new Audio\(", code)
+        assert len(constructions) == 1, "a per-tap Audio object loses the gesture"
+
+    def test_the_element_is_constructed_without_a_source(self):
+        """The src is assigned per take; constructing with a URL would tie the
+        one element to whichever take happened to be first."""
+        assert "new Audio()" in APP.read_text(encoding="utf8")
+
+    def test_the_rejection_is_reported_to_the_user(self):
+        """A silent failure here is the bug itself: the page must say
+        something rather than look like it played."""
+        source = APP.read_text(encoding="utf8")
+        assert "NotAllowedError" in source
+
+    def test_an_aborted_play_is_not_reported_as_a_failure(self):
+        """load() rejects the previous tap's play() with AbortError. With one
+        reused element that stale rejection would otherwise announce a failure
+        over the newer take that is playing correctly."""
+        assert "AbortError" in APP.read_text(encoding="utf8")
