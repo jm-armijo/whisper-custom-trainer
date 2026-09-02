@@ -442,6 +442,75 @@ class TestTheRealPageLoads:
         assert broken == []
 
 
+class TestTheAssetsAreNeverCached:
+    """A rebuilt page must not be run against the previous build's modules.
+
+    SimpleHTTPRequestHandler sends Last-Modified and nothing else, so a browser
+    is free to heuristically reuse a module it fetched before. That shipped a
+    fresh index.html against a stale app.js: the new markup had dropped
+    #btn-prev, the cached bindControls still asked for it, and the null threw
+    out of boot() before the first repaint - a page stuck on the placeholder
+    title with no script list and nothing on screen to say why.
+    """
+
+    def test_a_module_is_not_cached(self, real_assets_server):
+        with urllib.request.urlopen(f"{real_assets_server}/static/app.js") as response:
+            assert "no-store" in response.headers["Cache-Control"]
+
+    def test_the_page_itself_is_not_cached(self, real_assets_server):
+        with urllib.request.urlopen(f"{real_assets_server}/") as response:
+            assert "no-store" in response.headers["Cache-Control"]
+
+    def test_the_stylesheet_is_not_cached(self, real_assets_server):
+        with urllib.request.urlopen(f"{real_assets_server}/static/style.css") as response:
+            assert "no-store" in response.headers["Cache-Control"]
+
+    def test_a_json_reply_is_untouched(self, real_assets_server):
+        """Only the static route sets this; the API must not acquire it by
+        sharing one handler across a keep-alive connection."""
+        with urllib.request.urlopen(f"{real_assets_server}/api/scripts") as response:
+            assert response.headers.get("Cache-Control") is None
+
+
+# document.getElementById("...") in a module, and id="..." in the markup.
+ELEMENT_LOOKUP = re.compile(r'getElementById\(\s*"([^"]+)"\s*\)')
+ELEMENT_ID = re.compile(r'\bid="([^"]+)"')
+
+
+class TestThePageCarriesEveryElementTheModulesLookUp:
+    """The failure that caching merely delayed: markup and modules disagreeing.
+
+    render.elements() is the view's whole DOM contract, and a getElementById
+    that misses returns null rather than raising - the crash lands later, at
+    the first addEventListener, out of boot(), where nothing reaches the
+    screen. Removing a button from index.html and leaving its lookup behind is
+    silent until the page is opened in a browser, so it is asserted here.
+    """
+
+    def _sources(self, base):
+        markup = call(f"{base}/")[1].decode("utf8")
+        modules = [
+            call(f"{base}/static/{name}")[1].decode("utf8")
+            for name in ("app.js", "render.js")
+        ]
+        return markup, modules
+
+    def test_every_looked_up_id_exists_in_the_page(self, real_assets_server):
+        markup, modules = self._sources(real_assets_server)
+        present = set(ELEMENT_ID.findall(markup))
+
+        missing = sorted(
+            {i for source in modules for i in ELEMENT_LOOKUP.findall(source)} - present
+        )
+        assert missing == []
+
+    def test_the_modules_look_up_anything_at_all(self, real_assets_server):
+        """Guards the regex above: a lookup spelled differently would make the
+        assertion pass over an empty set."""
+        _, modules = self._sources(real_assets_server)
+        assert any(ELEMENT_LOOKUP.findall(source) for source in modules)
+
+
 class TestAudioPlaysOnAPhone:
     """The clip route as Safari drives it.
 

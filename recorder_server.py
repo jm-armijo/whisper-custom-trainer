@@ -373,10 +373,19 @@ class RecorderHandler(SimpleHTTPRequestHandler):
 
     config = None
 
+    # A class attribute, not set in __init__: end_headers can run while the base
+    # class is still handling a malformed request line, before any per-instance
+    # setup of ours has happened.
+    _serving_static = False
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(self.config.static_dir), **kwargs)
 
     def do_GET(self):
+        # Reset per request, not per connection: keep-alive reuses one handler
+        # for many requests, so an /api call after a static one would otherwise
+        # inherit the flag.
+        self._serving_static = False
         route, name, index = parse_path(self.path)
 
         if route == "scripts":
@@ -489,11 +498,28 @@ class RecorderHandler(SimpleHTTPRequestHandler):
         self.end_headers()
         self._write_body(payload)
 
+    def end_headers(self):
+        """Forbid caching of the assets before the body goes out.
+
+        SimpleHTTPRequestHandler sends Last-Modified and no Cache-Control, which
+        lets a browser heuristically cache the ES modules. Rebuilding the image
+        then served a fresh index.html against app.js from the last build: the
+        new markup has no #btn-prev, the old bindControls asked for it anyway,
+        and the null it got threw out of boot() before the first repaint - the
+        page sat on the literal "loading…" in the HTML with no script list and
+        no error visible on screen. The assets are a few kB off the LAN, so
+        never caching them costs nothing next to shipping a stale bundle.
+        """
+        if self._serving_static:
+            self.send_header("Cache-Control", "no-store, must-revalidate")
+        super().end_headers()
+
     def _serve_static(self):
         if not Path(self.config.static_dir).is_dir():
             self._error(HTTPStatus.NOT_FOUND, "No web assets are installed.")
             return
 
+        self._serving_static = True
         if self.path.startswith(STATIC_PREFIX):
             # translate_path resolves against static_dir, and it also normalises
             # away any ../ in the request, so stripping the prefix cannot be
