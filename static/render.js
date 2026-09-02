@@ -28,12 +28,9 @@ export function elements() {
     timer: document.getElementById("record-timer"),
     message: document.getElementById("message"),
     recordButton: document.getElementById("btn-record"),
-    redoButton: document.getElementById("btn-redo"),
     playButton: document.getElementById("btn-play"),
     stopButton: document.getElementById("btn-stop"),
     nextTakeButton: document.getElementById("btn-next-take"),
-    prevButton: document.getElementById("btn-prev"),
-    nextButton: document.getElementById("btn-next"),
   };
 }
 
@@ -161,7 +158,12 @@ function drawControls(dom, view) {
   // Record only ever starts a take and Stop only ever ends one, so the key
   // under the thumb keeps its meaning between presses. Play/pause is the one
   // deliberate exception: a deck pairs those on a single key.
+  //
+  // On a line that already has audio this key is the re-record that the Redo
+  // button used to be, so its accessible name says so - the glyph cannot, and
+  // a blind user would otherwise get no warning before the confirm appears.
   dom.recordButton.classList.toggle("is-recording", recording);
+  dom.recordButton.setAttribute("aria-label", onRecorded ? "Re-record" : "Record");
   dom.recordButton.disabled = !hasScript || busy;
 
   // One key plays, pauses and resumes, so its face has to say which of those
@@ -170,7 +172,9 @@ function drawControls(dom, view) {
   // Written on the button rather than a child span: the glyph is the button's
   // only content, and addressing it through the element already bound here
   // keeps every lookup in elements() where the view's DOM contract lives.
-  dom.playButton.textContent = playing ? "⏸" : "▶";
+  // The deck's pair glyph at rest, because one key does both; a lone pause bar
+  // while a clip runs, because then the next press can only be pause.
+  dom.playButton.textContent = playing ? "⏸" : "⏯";
   dom.playButton.setAttribute("aria-label", playPauseLabel);
   dom.playButton.classList.toggle("is-playing", playing);
   // Enabled while paused even though the cursor may sit on an unrecorded line:
@@ -185,13 +189,6 @@ function drawControls(dom, view) {
   // there is a line left to move to.
   dom.nextTakeButton.disabled =
     !recording || !hasScript || view.cursor >= view.chunks.length - 1;
-
-  // Redo acts on the take under the cursor, so it is meaningless both mid-take
-  // and on a line with no audio yet.
-  dom.redoButton.disabled = busy || !onRecorded;
-  dom.prevButton.disabled = busy || !hasScript || view.cursor === 0;
-  dom.nextButton.disabled =
-    busy || !hasScript || view.cursor >= view.chunks.length - 1;
 }
 
 // ---------- waveform canvas ----------

@@ -173,26 +173,37 @@ function selectChunk(index) {
   repaint({ scroll: true });
 }
 
-function move(action) {
-  if (isBusy(app.state) || !app.session) {
-    return;
-  }
-  app.session.move(action);
-  app.message = "";
-  repaint({ scroll: true });
-}
-
 /** Record only ever starts a take; Stop is its own button now.
  *
  * A tap landing while the previous take is still uploading does nothing.
  * Falling through to startRecording here is what let a second tap capture over
  * an in-flight upload, so two takes raced for one line.
+ *
+ * Recording over a line that already has a take is a re-record, which is what
+ * the separate Redo button used to be. A deck has no redo key: the same key
+ * records whatever line is selected, and the only thing a finished line needs
+ * is the confirmation before its audio is thrown away.
  */
 async function record() {
-  if (isBusy(app.state)) {
+  if (isBusy(app.state) || !app.session) {
     return;
   }
-  await startRecording();
+  const index = app.session.cursor;
+  if (!app.session.isRecorded(index)) {
+    await startRecording();
+    return;
+  }
+  if (!window.confirm(`Re-record line ${index + 1}?`)) {
+    say("kept the existing take");
+    return;
+  }
+  await guard(async () => {
+    await api.deleteChunk(app.session.name, index);
+    app.session.clearRecorded(index);
+    bumpScriptProgress();
+    repaint();
+    await startRecording();
+  });
 }
 
 async function startRecording() {
@@ -278,24 +289,6 @@ function bumpScriptProgress() {
   if (entry) {
     entry.recorded = app.session.recorded.size;
   }
-}
-
-async function redo() {
-  if (!app.session || isBusy(app.state)) {
-    return;
-  }
-  const index = app.session.cursor;
-  if (!window.confirm(`Re-record line ${index + 1}?`)) {
-    say("kept the existing take");
-    return;
-  }
-  await guard(async () => {
-    await api.deleteChunk(app.session.name, index);
-    app.session.clearRecorded(index);
-    bumpScriptProgress();
-    repaint();
-    await startRecording();
-  });
 }
 
 // One element reused for every take, created once and kept.
@@ -514,12 +507,9 @@ async function stopAndRecordNext() {
 
 function bindControls() {
   dom.recordButton.addEventListener("click", record);
-  dom.redoButton.addEventListener("click", redo);
   dom.playButton.addEventListener("click", playPause);
   dom.stopButton.addEventListener("click", stop);
   dom.nextTakeButton.addEventListener("click", stopAndRecordNext);
-  dom.prevButton.addEventListener("click", () => move("up"));
-  dom.nextButton.addEventListener("click", () => move("down"));
   dom.menuToggle.addEventListener("click", () => setMenu(!app.menuOpen));
 }
 

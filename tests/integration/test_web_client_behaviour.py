@@ -105,6 +105,10 @@ globalThis.document = {
     }
     return nodes.get(id);
   },
+  // Chunk rows are built here rather than looked up by id, and selecting a
+  // line is now a tap on its row - Prev/Next are gone, because a web page can
+  // just be clicked. A test moving the cursor needs the row's own handler, so
+  // the created nodes stay reachable through the list they are appended to.
   createElement: () => element("created"),
 };
 
@@ -458,6 +462,9 @@ def drive_app(body, origin, payload=None):
         await import("./app.js");
         await __settle();
         const button = (id) => __nodes.get(id);
+        // Selecting a line is a tap on its row: Prev/Next are gone, because a
+        // web page can be clicked directly.
+        const line = (index) => __nodes.get("chunk-list").children[index];
         {body}
         """,
         origin,
@@ -950,7 +957,7 @@ class TestThePlaybackWaveform:
     await __settle();
     await button("btn-stop").handlers.click();
     await __settle();
-    button("btn-prev").handlers.click();
+    line(0).handlers.click();
     await __settle();
     """
 
@@ -1060,7 +1067,7 @@ class TestTheTransportBehavesLikeACassetteDeck:
     await __settle();
     await button("btn-stop").handlers.click();
     await __settle();
-    button("btn-prev").handlers.click();
+    line(0).handlers.click();
     await __settle();
     """
 
@@ -1117,9 +1124,9 @@ class TestTheTransportBehavesLikeACassetteDeck:
         await __settle();
         console.log(JSON.stringify({ stopped, playing, paused: face() }));
         """, live_server)
-        assert result["stopped"] == {"glyph": "▶", "label": "Play"}
+        assert result["stopped"] == {"glyph": "⏯", "label": "Play"}
         assert result["playing"] == {"glyph": "⏸", "label": "Pause"}
-        assert result["paused"] == {"glyph": "▶", "label": "Resume"}
+        assert result["paused"] == {"glyph": "⏯", "label": "Resume"}
 
     def test_stop_rewinds_so_the_next_play_is_the_whole_take(self, live_server):
         result = drive_app(self.RECORD_ONE + """
@@ -1189,14 +1196,14 @@ class TestTheTransportBehavesLikeACassetteDeck:
         console.log(JSON.stringify({ state, glyph }));
         """, live_server)
         assert result["state"] == "RECORDING"
-        assert result["glyph"] == "▶", "the play key still offered to pause"
+        assert result["glyph"] == "⏯", "the play key still offered to pause"
 
     def test_stop_and_record_next_saves_then_arms_the_following_line(
         self, live_server
     ):
         result = drive_app("""
         __tracks.push({ stop: () => {} });
-        button("btn-next").handlers.click();
+        line(1).handlers.click();
         await __settle();
         const from = button("title").textContent;
         await button("btn-record").handlers.click();
@@ -1243,3 +1250,145 @@ class TestTheTransportBehavesLikeACassetteDeck:
         """, live_server)
         assert result["state"] == "IDLE", "a failed save armed the next line anyway"
         assert "0/" in result["title"], result["title"]
+
+
+class TestRecordAbsorbedTheRedoButton:
+    """Redo was its own key for no reason a deck would recognise: recording
+    over a line that already has audio *is* the re-record. What must survive
+    the merge is the confirmation, because the old take is deleted."""
+
+    RECORD_ONE = """
+    __tracks.push({ stop: () => {} });
+    await button("btn-record").handlers.click();
+    await __settle();
+    await button("btn-stop").handlers.click();
+    await __settle();
+    line(0).handlers.click();
+    await __settle();
+    """
+
+    def test_recording_over_a_finished_line_asks_first(self, live_server):
+        result = drive_app(self.RECORD_ONE + """
+        const asked = [];
+        window.confirm = (text) => { asked.push(text); return false; };
+        await button("btn-record").handlers.click();
+        await __settle();
+        console.log(JSON.stringify({
+          asked,
+          state: button("status-state").textContent,
+          message: button("message").textContent,
+        }));
+        """, live_server)
+        assert result["asked"], "the old take would have been deleted unasked"
+        assert "1" in result["asked"][0], result["asked"]
+        assert result["state"] == "IDLE", "declining still started a take"
+
+    def test_declining_keeps_the_existing_take(self, live_server):
+        """The clip must still be there afterwards: a confirm that deletes
+        before asking is worse than no confirm at all."""
+        result = drive_app(self.RECORD_ONE + """
+        window.confirm = () => false;
+        await button("btn-record").handlers.click();
+        await __settle();
+        const response = await fetch("/api/scripts/es/a.txt");
+        const script = await response.json();
+        console.log(JSON.stringify({ recorded: script.recorded }));
+        """, live_server)
+        assert result["recorded"] == [0], "the take was deleted after a refusal"
+
+    def test_accepting_re_records_the_line(self, live_server):
+        result = drive_app(self.RECORD_ONE + """
+        window.confirm = () => true;
+        await button("btn-record").handlers.click();
+        await __settle();
+        const during = button("status-state").textContent;
+        await button("btn-stop").handlers.click();
+        await __settle();
+        console.log(JSON.stringify({ during, opens:
+          __record.filter((entry) => entry === "getUserMedia").length }));
+        """, live_server)
+        assert result["during"] == "RECORDING", "the re-record never started"
+        assert result["opens"] == 2
+
+    def test_a_fresh_line_records_without_asking(self, live_server):
+        """The confirm belongs to the delete, not to the key: an unrecorded
+        line has nothing to lose, and a prompt on every take would be noise."""
+        result = drive_app("""
+        __tracks.push({ stop: () => {} });
+        const asked = [];
+        window.confirm = (text) => { asked.push(text); return true; };
+        await button("btn-record").handlers.click();
+        await __settle();
+        const during = button("status-state").textContent;
+        await button("btn-stop").handlers.click();
+        await __settle();
+        console.log(JSON.stringify({ asked, during }));
+        """, live_server)
+        assert result["asked"] == [], "a first take asked for confirmation"
+        assert result["during"] == "RECORDING"
+
+    def test_the_key_announces_itself_as_a_re_record(self, live_server):
+        """The glyph cannot say it, so the accessible name has to: without it
+        a screen-reader user meets the confirm with no warning."""
+        result = drive_app(self.RECORD_ONE + """
+        const onRecorded = button("btn-record").attributes["aria-label"];
+        line(1).handlers.click();
+        await __settle();
+        console.log(JSON.stringify({
+          onRecorded, onFresh: button("btn-record").attributes["aria-label"],
+        }));
+        """, live_server)
+        assert result["onRecorded"] == "Re-record"
+        assert result["onFresh"] == "Record"
+
+
+class TestALineIsChosenByTappingIt:
+    """Prev and Next are gone. They existed because the curses recorder has no
+    pointer; a web page does, and every chunk row is already a click target."""
+
+    def test_tapping_a_line_moves_the_cursor_there(self, live_server):
+        result = drive_app("""
+        line(2).handlers.click();
+        await __settle();
+        console.log(JSON.stringify({
+          current: line(2).attributes["aria-current"],
+          // Boolean rather than the value: an absent attribute is undefined,
+          // which JSON.stringify drops from the object entirely.
+          elsewhere: "aria-current" in line(0).attributes,
+        }));
+        """, live_server)
+        assert result["current"] == "true", "the tapped line is not the cursor"
+        assert result["elsewhere"] is False, "two lines claim to be the cursor"
+
+    def test_the_tapped_line_is_the_one_that_gets_recorded(self, live_server):
+        """The whole point of the tap: what is selected is what the mic writes."""
+        result = drive_app("""
+        __tracks.push({ stop: () => {} });
+        line(3).handlers.click();
+        await __settle();
+        await button("btn-record").handlers.click();
+        await __settle();
+        await button("btn-stop").handlers.click();
+        await __settle();
+        const response = await fetch("/api/scripts/es/a.txt");
+        const script = await response.json();
+        console.log(JSON.stringify({ recorded: script.recorded }));
+        """, live_server)
+        assert result["recorded"] == [3], "the take landed on the wrong line"
+
+    def test_a_tap_mid_take_cannot_move_the_cursor(self, live_server):
+        """Moving the line under a running take would save the audio against
+        whichever row was tapped last."""
+        result = drive_app("""
+        __tracks.push({ stop: () => {} });
+        await button("btn-record").handlers.click();
+        await __settle();
+        line(3).handlers.click();
+        await __settle();
+        await button("btn-stop").handlers.click();
+        await __settle();
+        const response = await fetch("/api/scripts/es/a.txt");
+        const script = await response.json();
+        console.log(JSON.stringify({ recorded: script.recorded }));
+        """, live_server)
+        assert result["recorded"] == [0], "a mid-take tap moved the recording"

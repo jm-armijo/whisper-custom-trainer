@@ -188,7 +188,9 @@ export function buildView({
 }
 
 const LEGENDS = {
-  [IDLE]: "record · play · redo · prev · next",
+  // No prev/next: a line is chosen by tapping it. No redo either - Record on a
+  // finished line is the re-record, and it asks first.
+  [IDLE]: "tap a line · play · record",
   [RECORDING]: "stop to save the take",
   [UPLOADING]: "saving the take…",
 };

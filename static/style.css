@@ -324,16 +324,22 @@ body {
 
 .controls {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
   gap: 0.4rem;
   padding: 0.6rem 0.75rem;
 }
 
-/* The transport keys in one row, like a deck: play/pause, stop, record, and
- * the combined stop-and-record-next. */
+/* The transport bar, laid out like the key deck on a cassette recorder: a
+ * close-packed run of identical slabs, seated in a recessed well, with a gap
+ * before Record so it reads as the one key set apart - which is how the
+ * hardware separated the key that overwrites the tape.
+ *
+ * Grid rather than flex so every key is exactly the same width whatever glyph
+ * it carries: on a deck they are moulded from one piece, and a Record key
+ * wider than Stop because ⏺ measures wider than ⏹ would look like a mistake. */
 .controls--transport {
   grid-template-columns: repeat(4, 1fr);
-  padding-bottom: 0;
+  gap: 0.15rem;
+  padding: 0.5rem 0.75rem 0;
 }
 
 .control {
@@ -356,11 +362,25 @@ body {
 
 /* The glyphs carry the meaning, so they are set large enough to read at a
  * glance from reading distance - the button's accessible name lives in its
- * aria-label, not in this text. */
+ * aria-label, not in this text.
+ *
+ * Squared off and lightly bevelled: a deck's keys are flat-topped rectangles
+ * in a row, not the rounded pills the rest of the page uses, and the taller
+ * slab is what makes the bar read as a transport rather than a toolbar. */
 .control--transport {
   font-size: 1.35rem;
   line-height: 1;
+  min-height: 3rem;
   padding: 0.45rem 0.25rem;
+  border-radius: 3px;
+  border-top-color: color-mix(in srgb, var(--border) 40%, #fff);
+  box-shadow: inset 0 -2px 0 rgb(0 0 0 / 0.35);
+}
+
+/* Pressed, not merely highlighted: the key travels down into the well. */
+.control--transport:active:not(:disabled) {
+  transform: translateY(1px);
+  box-shadow: inset 0 -1px 0 rgb(0 0 0 / 0.35);
 }
 
 /* Two glyphs share this key, so it must not outgrow the single-glyph ones. */
@@ -369,7 +389,11 @@ body {
   letter-spacing: -0.08em;
 }
 
+/* Record is the key set apart, the way the hardware separated the one control
+ * that overwrites the tape: its own colour, and a gap before it so the three
+ * playback keys read as a group rather than as four identical slabs. */
 .control--record {
+  margin-left: 0.5rem;
   background: var(--recorded);
   border-color: var(--recorded);
   color: #06120c;
