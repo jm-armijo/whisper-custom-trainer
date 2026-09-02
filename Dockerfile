@@ -54,9 +54,15 @@ EXPOSE 8080
 # than in 8KB bursts.
 ENV PYTHONUNBUFFERED=1
 
+# --cert is appended only when RECORDER_CERT is set, so an unset variable
+# leaves the server on plain HTTP rather than passing an empty --cert that
+# argparse would take as the literal path "". A phone will not open its
+# microphone over http, so the LAN deployment sets it; the localhost dev loop
+# does not need to.
 CMD ["sh", "-c", "exec python recorder_server.py \
     --host \"$RECORDER_HOST\" \
     --port \"$RECORDER_PORT\" \
     --scripts \"$RECORDER_SCRIPTS_DIR\" \
     --out-dir \"$RECORDER_OUT_DIR\" \
-    --csv \"$RECORDER_CSV\""]
+    --csv \"$RECORDER_CSV\" \
+    ${RECORDER_CERT:+--cert \"$RECORDER_CERT\"}"]
