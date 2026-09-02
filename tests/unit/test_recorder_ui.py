@@ -15,8 +15,6 @@ import recorder_state as rs
 import recorder_theme as rt
 import recorder_ui as ui
 
-pytestmark = pytest.mark.integration
-
 
 class StubScreen:
     """Records addstr calls instead of painting them."""

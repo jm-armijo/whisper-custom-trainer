@@ -6,7 +6,6 @@ integration tier binds a port; anything provable without one is proved here.
 """
 
 import csv
-import subprocess
 
 import numpy as np
 import pytest
@@ -15,30 +14,7 @@ import soundfile as sf
 import recorder_server as srv
 import recorder_state as rs
 import whisper_pipeline as wp
-
-LINE = "this is a deliberately long sentence with plenty of words in it number {n}."
-
-
-def script_of(sentences):
-    return "\n\n".join(LINE.format(n=n) for n in range(sentences))
-
-
-@pytest.fixture
-def paths(tmp_path):
-    """The three directories the server is configured with."""
-    scripts = tmp_path / "scripts"
-    scripts.mkdir()
-    (scripts / "es.txt").write_text(script_of(4), encoding="utf8")
-    (scripts / "en.txt").write_text(script_of(3), encoding="utf8")
-
-    audio = tmp_path / "data"
-    audio.mkdir()
-    return srv.Config(
-        scripts_dir=scripts,
-        csv_path=tmp_path / "dataset.csv",
-        audio_dir=audio,
-        static_dir=tmp_path / "static",
-    )
+from tests.conftest import script_of
 
 
 def wav_bytes(seconds=1.0, sample_rate=16000, channels=1):
@@ -374,41 +350,3 @@ def multipart(payload, field="audio", boundary="----testboundary"):
         f"\r\n--{boundary}--\r\n".encode(),
     ])
     return body, f"multipart/form-data; boundary={boundary}"
-
-
-class TestWebmDecoding:
-    """The browser records WebM/Opus, which libsndfile cannot open.
-
-    librosa 1.x dropped the audioread fallback, so soundfile raising
-    'Format not recognised' is the whole story without an ffmpeg hop.
-    """
-
-    @pytest.fixture
-    def webm(self, tmp_path):
-        if not srv.ffmpeg_command():
-            pytest.skip("ffmpeg is not installed")
-
-        destination = tmp_path / "take.webm"
-        subprocess.run(
-            ["ffmpeg", "-hide_banner", "-loglevel", "error",
-             "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
-             "-c:a", "libopus", "-f", "webm", str(destination), "-y"],
-            check=True,
-        )
-        return destination.read_bytes()
-
-    def test_soundfile_alone_cannot_open_it(self, webm):
-        """Guards the reason the ffmpeg hop exists: if libsndfile ever gains
-        WebM support this test fails and the fallback can be reconsidered."""
-        import io
-
-        with pytest.raises(sf.LibsndfileError):
-            sf.read(io.BytesIO(webm))
-
-    def test_decode_audio_handles_it_anyway(self, webm):
-        samples = srv.decode_audio(webm)
-        assert len(samples) == pytest.approx(wp.SAMPLE_RATE, rel=0.05)
-
-    def test_a_webm_take_reaches_the_dataset(self, paths, webm):
-        srv.save_chunk(paths, "es.txt", 0, webm)
-        assert rs.recorded_indices(paths.csv_path, paths.audio_dir, "es") == {0}
