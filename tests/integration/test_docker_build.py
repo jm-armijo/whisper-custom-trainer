@@ -44,7 +44,15 @@ def docker_cli():
 def docker_daemon():
     """A docker binary talking to a live daemon, or a skip naming which is absent."""
     binary = docker_cli()
-    probe = subprocess.run([binary, "info"], capture_output=True, text=True, check=False)
+    # Timed out rather than left to block: a Docker Desktop wedged mid-start
+    # answers `info` neither with success nor an error, and an unbounded probe
+    # hangs the whole commit gate instead of skipping the tests that need it.
+    try:
+        probe = subprocess.run(
+            [binary, "info"], capture_output=True, text=True, check=False, timeout=15,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.skip("docker daemon did not answer `info` within 15s")
     if probe.returncode != 0:
         pytest.skip(f"docker daemon unreachable: {probe.stderr.strip().splitlines()[-1:]}")
     return binary
@@ -243,8 +251,8 @@ class TestPersistence:
         assert kind == "directory"
 
     def test_mounts_the_reading_material_read_only(self, compose):
-        """The server only reads scripts/; :ro makes an accidental write fail loudly."""
-        assert "./scripts:/data/scripts:ro" in compose
+        """The server only reads the material; :ro makes a write fail loudly."""
+        assert "./training-text:/data/scripts:ro" in compose
 
     def test_passes_every_path_to_the_server(self, dockerfile):
         """Each mount must reach the server, addressed by the env var it reads.

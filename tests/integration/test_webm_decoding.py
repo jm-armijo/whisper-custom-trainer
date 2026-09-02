@@ -49,5 +49,5 @@ class TestWebmDecoding:
         assert len(samples) == pytest.approx(wp.SAMPLE_RATE, rel=0.05)
 
     def test_a_webm_take_reaches_the_dataset(self, paths, webm):
-        srv.save_chunk(paths, "es.txt", 0, webm)
+        srv.save_chunk(paths, "es/a.txt", 0, webm)
         assert rs.recorded_indices(paths.csv_path, paths.audio_dir, "es") == {0}

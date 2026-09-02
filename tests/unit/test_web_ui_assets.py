@@ -29,11 +29,14 @@ RENDER = STATIC / "render.js"
 MODULES = (APP, API, STATE, RENDER, STATIC / "microphone.js")
 
 # The routes recorder_server.py serves; the client must address every one.
+# scriptPath escapes each segment of "<language>/<file>" separately, so the one
+# structural slash survives; encodeURIComponent over the whole name sent %2F,
+# which matches no route.
 CONTRACT_PATHS = (
     "/api/scripts",
-    "/api/scripts/${encodeURIComponent(name)}",
-    "/api/scripts/${encodeURIComponent(name)}/chunks/${index}",
-    "/api/scripts/${encodeURIComponent(name)}/chunks/${index}/audio",
+    "/api/scripts/${scriptPath(name)}",
+    "/api/scripts/${scriptPath(name)}/chunks/${index}",
+    "/api/scripts/${scriptPath(name)}/chunks/${index}/audio",
 )
 
 # recorder_state.chunk_statuses returns four, not three: a recorded line under

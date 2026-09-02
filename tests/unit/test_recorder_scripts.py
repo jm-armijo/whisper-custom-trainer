@@ -20,7 +20,9 @@ def scripts_dir(tmp_path):
 
     def build(files):
         for name, text in files.items():
-            (directory / name).write_text(text, encoding="utf8")
+            path = directory / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf8")
         return directory
 
     return build
@@ -55,65 +57,29 @@ def dataset(tmp_path):
     return build
 
 
-class TestInferLanguage:
-    """scripts/es.txt is the existing convention; the stem carries the label."""
-
-    def test_reads_the_language_from_the_stem(self):
-        assert rsc.infer_language("scripts/es.txt") == "es"
-
-    def test_recognises_every_supported_language(self):
-        for language in wp.SUPPORTED_LANGUAGES:
-            assert rsc.infer_language(f"scripts/{language}.txt") == language
-
-    def test_is_case_insensitive(self):
-        assert rsc.infer_language("scripts/ES.txt") == "es"
-
-    def test_returns_none_for_an_unrecognised_stem(self):
-        """An arbitrary name cannot be guessed, so the caller must supply one."""
-        assert rsc.infer_language("scripts/chapter-one.txt") is None
-
-    def test_does_not_match_a_language_buried_in_the_stem(self):
-        """'expenses' contains 'es' but is not a Spanish script."""
-        assert rsc.infer_language("scripts/expenses.txt") is None
-
-
-class TestResolveLanguage:
-    def test_prefers_the_explicit_language_over_the_stem(self):
-        assert rsc.resolve_language("scripts/es.txt", "en") == "en"
-
-    def test_falls_back_to_the_stem(self):
-        assert rsc.resolve_language("scripts/es.txt", None) == "es"
-
-    def test_rejects_an_unguessable_script_without_a_language(self):
-        with pytest.raises(wp.PipelineError, match="language"):
-            rsc.resolve_language("scripts/chapter-one.txt", None)
-
-    def test_rejects_an_unsupported_explicit_language(self):
-        with pytest.raises(wp.PipelineError, match="fr"):
-            rsc.resolve_language("scripts/es.txt", "fr")
-
-
 class TestListScripts:
     def test_lists_only_txt_files(self, scripts_dir):
-        directory = scripts_dir({"es.txt": "hola", "notes.md": "x", "en.txt": "hi"})
+        directory = scripts_dir(
+            {"es/a.txt": "hola", "es/notes.md": "x", "en/a.txt": "hi"}
+        )
         assert [item["name"] for item in rsc.list_scripts(directory)] == [
-            "en.txt", "es.txt",
+            "en/a.txt", "es/a.txt",
         ]
 
     def test_sorts_by_name_so_the_order_is_stable(self, scripts_dir):
-        directory = scripts_dir({"c.txt": "x", "a.txt": "x", "b.txt": "x"})
+        directory = scripts_dir({"en/c.txt": "x", "en/a.txt": "x", "en/b.txt": "x"})
         assert [item["name"] for item in rsc.list_scripts(directory)] == [
-            "a.txt", "b.txt", "c.txt",
+            "en/a.txt", "en/b.txt", "en/c.txt",
         ]
 
     def test_carries_the_path_so_the_caller_need_not_rebuild_it(self, scripts_dir):
-        directory = scripts_dir({"es.txt": "hola"})
-        assert rsc.list_scripts(directory)[0]["path"] == directory / "es.txt"
+        directory = scripts_dir({"es/a.txt": "hola"})
+        assert rsc.list_scripts(directory)[0]["path"] == directory / "es" / "a.txt"
 
-    def test_carries_the_inferred_language(self, scripts_dir):
-        directory = scripts_dir({"es.txt": "hola", "misc.txt": "x"})
+    def test_carries_the_language_its_directory_names(self, scripts_dir):
+        directory = scripts_dir({"es/a.txt": "hola", "en/b.txt": "hi"})
         languages = {item["name"]: item["language"] for item in rsc.list_scripts(directory)}
-        assert languages == {"es.txt": "es", "misc.txt": None}
+        assert languages == {"es/a.txt": "es", "en/b.txt": "en"}
 
     def test_a_missing_directory_lists_nothing(self, tmp_path):
         assert rsc.list_scripts(tmp_path / "absent") == []
@@ -224,8 +190,8 @@ class TestResolveScript:
     """The server binds to a LAN address, so a name must not escape the dir."""
 
     def test_resolves_a_plain_name(self, scripts_dir):
-        directory = scripts_dir({"es.txt": "hola"})
-        assert rsc.resolve_script(directory, "es.txt") == directory / "es.txt"
+        directory = scripts_dir({"es/a.txt": "hola"})
+        assert rsc.resolve_script(directory, "es/a.txt") == directory / "es" / "a.txt"
 
     def test_rejects_a_parent_traversal(self, scripts_dir):
         directory = scripts_dir({"es.txt": "hola"})
@@ -262,9 +228,9 @@ class TestResolveScript:
             rsc.resolve_script(directory, "link.txt")
 
     def test_rejects_a_missing_script(self, scripts_dir):
-        directory = scripts_dir({"es.txt": "hola"})
+        directory = scripts_dir({"es/a.txt": "hola"})
         with pytest.raises(wp.PipelineError, match="not found"):
-            rsc.resolve_script(directory, "absent.txt")
+            rsc.resolve_script(directory, "es/absent.txt")
 
     def test_rejects_a_non_txt_file(self, scripts_dir):
         """Only the readable material is addressable, not any file that landed
@@ -272,3 +238,60 @@ class TestResolveScript:
         directory = scripts_dir({"es.txt": "hola", "notes.md": "x"})
         with pytest.raises(wp.PipelineError, match="Invalid script"):
             rsc.resolve_script(directory, "notes.md")
+
+
+class TestLanguageDirectories:
+    """One directory per language: the path states the language, so nothing is
+    inferred from a filename and an unlabelled file cannot exist."""
+
+    @pytest.fixture
+    def tree(self, tmp_path):
+        for language, names in (("en", ("general.txt", "software.txt")),
+                                ("es", ("phonetics.txt",))):
+            folder = tmp_path / language
+            folder.mkdir()
+            for name in names:
+                (folder / name).write_text("A sentence to read aloud.", encoding="utf8")
+        return tmp_path
+
+    def test_lists_every_language_directory(self, tree):
+        names = {row["name"] for row in rsc.list_scripts(tree)}
+        assert names == {"en/general.txt", "en/software.txt", "es/phonetics.txt"}
+
+    def test_the_directory_names_the_language(self, tree):
+        by_name = {row["name"]: row["language"] for row in rsc.list_scripts(tree)}
+        assert by_name["es/phonetics.txt"] == "es"
+        assert by_name["en/general.txt"] == "en"
+
+    def test_a_file_outside_a_language_directory_is_ignored(self, tree):
+        """There is nowhere to file it, so listing it would offer an
+        unrecordable script."""
+        (tree / "loose.txt").write_text("orphan", encoding="utf8")
+        assert all(row["name"] != "loose.txt" for row in rsc.list_scripts(tree))
+
+    def test_an_unsupported_language_directory_is_ignored(self, tree):
+        folder = tree / "fr"
+        folder.mkdir()
+        (folder / "bonjour.txt").write_text("Bonjour.", encoding="utf8")
+        assert all(not row["name"].startswith("fr/") for row in rsc.list_scripts(tree))
+
+    def test_resolves_a_nested_name(self, tree):
+        assert rsc.resolve_script(tree, "es/phonetics.txt").name == "phonetics.txt"
+
+    def test_rejects_a_traversal_through_a_language_directory(self, tree):
+        with pytest.raises(wp.PipelineError):
+            rsc.resolve_script(tree, "en/../../etc/passwd")
+
+    def test_rejects_a_name_deeper_than_one_directory(self, tree):
+        nested = tree / "en" / "deep"
+        nested.mkdir()
+        (nested / "x.txt").write_text("x", encoding="utf8")
+        with pytest.raises(wp.PipelineError):
+            rsc.resolve_script(tree, "en/deep/x.txt")
+
+    def test_rejects_an_unsupported_language_directory(self, tree):
+        folder = tree / "fr"
+        folder.mkdir()
+        (folder / "bonjour.txt").write_text("Bonjour.", encoding="utf8")
+        with pytest.raises(wp.PipelineError):
+            rsc.resolve_script(tree, "fr/bonjour.txt")

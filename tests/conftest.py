@@ -86,9 +86,12 @@ def paths(tmp_path):
     import recorder_server as srv
 
     scripts = tmp_path / "scripts"
-    scripts.mkdir()
-    (scripts / "es.txt").write_text(script_of(4), encoding="utf8")
-    (scripts / "en.txt").write_text(script_of(3), encoding="utf8")
+    # One directory per language: the path states the language, so nothing is
+    # inferred from a filename.
+    (scripts / "es").mkdir(parents=True)
+    (scripts / "en").mkdir(parents=True)
+    (scripts / "es" / "a.txt").write_text(script_of(4), encoding="utf8")
+    (scripts / "en" / "a.txt").write_text(script_of(3), encoding="utf8")
 
     audio = tmp_path / "data"
     audio.mkdir()

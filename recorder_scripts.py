@@ -26,32 +26,6 @@ class ScriptNotFound(wp.PipelineError):
     """
 
 
-def infer_language(path):
-    """The language named by the filename stem, or None when it names none.
-
-    scripts/es.txt with --lang es is the established convention, so the stem is
-    a reliable label; anything else has to be told which language it is rather
-    than guessed at, because a mislabelled row poisons the bilingual adapter.
-    """
-    stem = Path(path).stem.lower()
-    return stem if stem in wp.SUPPORTED_LANGUAGES else None
-
-
-def resolve_language(path, language):
-    """The language to record this script in, preferring an explicit choice."""
-    chosen = language or infer_language(path)
-    if chosen is None:
-        raise wp.PipelineError(
-            f"Cannot infer a language from {Path(path).name}; pass one explicitly."
-        )
-    if chosen not in wp.SUPPORTED_LANGUAGES:
-        raise wp.PipelineError(
-            f"Unsupported language {chosen!r}; expected one of "
-            f"{', '.join(wp.SUPPORTED_LANGUAGES)}."
-        )
-    return chosen
-
-
 def list_scripts(scripts_dir):
     """The readable scripts in a directory, sorted by name.
 
@@ -62,9 +36,13 @@ def list_scripts(scripts_dir):
     if not directory.is_dir():
         return []
 
+    # The language directory is the label, so a file loose at the top level or
+    # under an unsupported language has nowhere to be filed and is skipped
+    # rather than offered as an unrecordable script.
     return [
-        {"name": path.name, "path": path, "language": infer_language(path)}
-        for path in sorted(directory.glob(f"*{SCRIPT_SUFFIX}"))
+        {"name": f"{language}/{path.name}", "path": path, "language": language}
+        for language in sorted(wp.SUPPORTED_LANGUAGES)
+        for path in sorted((directory / language).glob(f"*{SCRIPT_SUFFIX}"))
         if path.is_file()
     ]
 
@@ -78,11 +56,14 @@ def resolve_script(scripts_dir, name):
     symlink pointing outside from being read.
     """
     directory = Path(scripts_dir).resolve()
-    if _is_unsafe_name(name):
+    language, _, filename = name.partition("/")
+    if language not in wp.SUPPORTED_LANGUAGES or _is_unsafe_name(filename):
         raise wp.PipelineError(f"Invalid script name: {name!r}")
 
-    path = (directory / name).resolve()
-    if path.parent != directory or path.suffix != SCRIPT_SUFFIX:
+    # Resolved before comparing, so a symlink pointing out of the tree is
+    # caught by the parent check rather than followed.
+    path = (directory / language / filename).resolve()
+    if path.parent != (directory / language) or path.suffix != SCRIPT_SUFFIX:
         raise wp.PipelineError(f"Invalid script name: {name!r}")
     if not path.is_file():
         raise ScriptNotFound(f"Script not found: {name}")
@@ -100,7 +81,7 @@ def _is_unsafe_name(name):
     )
 
 
-def script_progress(path, csv_path, audio_dir, language):
+def script_progress(path, csv_path, audio_dir, language, name=None):
     """Chunks, which are recorded, and the counts a picker needs to show.
 
     Chunking here rather than caching it means the dataset and the script file
@@ -119,7 +100,10 @@ def script_progress(path, csv_path, audio_dir, language):
     recorded = {index for index in recorded if index < len(chunks)}
 
     return {
-        "name": script.name,
+        # The caller's qualified name ("es/a.txt"), not the bare filename: it
+        # is the identifier the client sends back on every subsequent request,
+        # and two languages may hold the same filename.
+        "name": name or script.name,
         "language": language,
         "chunks": chunks,
         "recorded": recorded,

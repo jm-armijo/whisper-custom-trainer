@@ -153,7 +153,7 @@ export function buildView({ session, scripts, state, tick = 0, elapsed = 0, mess
 
   return {
     title:
-      ` ${session.name} · ${session.language} · ` +
+      ` ${session.name} · ` +
       `${session.recorded.size}/${session.chunks.length} recorded `,
     chunks: session.chunks,
     statuses: chunkStatuses(session.chunks.length, session.recorded, session.cursor),

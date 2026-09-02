@@ -34,7 +34,9 @@ import recorder_state as rs
 import whisper_pipeline as wp
 
 STATIC_DIR = wp.PROJECT_ROOT / "static"
-SCRIPTS_DIR = wp.PROJECT_ROOT / "scripts"
+# Reading material ships with the repo so a fresh clone (or the Pi) has
+# something to record; scripts/ was gitignored and arrived empty.
+SCRIPTS_DIR = wp.PROJECT_ROOT / "training-text"
 
 # index.html addresses its stylesheet and modules as /static/<name>, which keeps
 # every asset in one namespace that cannot collide with /api/ or with a script
@@ -189,9 +191,11 @@ def _part_name(part):
 def _progress(config, name):
     """The requested script's progress, or an error naming what went wrong."""
     path = rsc.resolve_script(config.scripts_dir, name)
-    language = rsc.resolve_language(path, None)
+    # resolve_script has already rejected any name whose directory is not a
+    # supported language, so the prefix is the label - nothing to infer.
+    language = name.split("/", 1)[0]
     return path, language, rsc.script_progress(
-        path, config.csv_path, config.audio_dir, language
+        path, config.csv_path, config.audio_dir, language, name
     )
 
 
@@ -226,27 +230,12 @@ def _progress_payload(progress):
 
 
 def _summary(config, item):
-    """One picker row. A script whose language cannot be inferred is still
-    listed - hiding it would leave the user unable to see why it is missing."""
-    if item["language"] is None:
-        return _unreadable_summary(item["name"])
-
+    """One picker row. list_scripts only yields files under a language
+    directory, so every item here has a language and is recordable."""
     progress = rsc.script_progress(
-        item["path"], config.csv_path, config.audio_dir, item["language"]
+        item["path"], config.csv_path, config.audio_dir, item["language"], item["name"]
     )
     return _progress_payload(progress)
-
-
-def _unreadable_summary(name):
-    """A script with no inferable language: listed, but recordable nowhere.
-
-    Counted as zero of zero rather than omitted, so the picker can show the
-    file and the user can see why it cannot be recorded into.
-    """
-    return {
-        "name": name, "language": None, "total": 0, "recorded_count": 0,
-        "recorded": [], "next_index": 0, "complete": False,
-    }
 
 
 def script_payload(config, name):
@@ -336,9 +325,15 @@ def _check_index(index, total):
 # ---------------------------------------------------------------------------
 
 _SCRIPTS = re.compile(r"^/api/scripts/?$")
-_SCRIPT = re.compile(r"^/api/scripts/([^/]+)/?$")
-_CHUNK = re.compile(r"^/api/scripts/([^/]+)/chunks/(\d+)/?$")
-_AUDIO = re.compile(r"^/api/scripts/([^/]+)/chunks/(\d+)/audio/?$")
+# A script name is "<language>/<file>", but the name group also matches a bare
+# single segment: an unqualified or traversing name must still reach
+# resolve_script, which is the single guard and answers 400 "invalid name".
+# Matching only the two-segment form made those a 404 from no route at all,
+# reporting a malformed name as a missing one.
+_NAME = r"([^/]+(?:/[^/]+)?)"
+_SCRIPT = re.compile(rf"^/api/scripts/{_NAME}/?$")
+_CHUNK = re.compile(rf"^/api/scripts/{_NAME}/chunks/(\d+)/?$")
+_AUDIO = re.compile(rf"^/api/scripts/{_NAME}/chunks/(\d+)/audio/?$")
 
 
 def parse_path(raw_path):

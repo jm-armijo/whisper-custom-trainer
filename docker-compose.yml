@@ -23,7 +23,7 @@ services:
     # into it would go with them. Both paths live on the host.
     volumes:
       # Reading material, host-managed and never written by the server.
-      - ./scripts:/data/scripts:ro
+      - ./training-text:/data/scripts:ro
       # The wav files AND the dataset rows, as one directory.
       #
       # The CSV is deliberately NOT bind-mounted as a single file. A file bind

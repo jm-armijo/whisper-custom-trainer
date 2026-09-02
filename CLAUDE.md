@@ -14,7 +14,7 @@ can load. Runs locally on Apple Silicon (MPS).
 ./setup.sh                                    # venv + deps + vendored repos (idempotent)
 source venv/bin/activate
 
-python record_data.py --text scripts/es.txt --lang es   # record; resumable
+python record_data.py --text training-text/es/spanish_phonetic_training.txt --lang es   # record; resumable
 python train.py                               # LoRA adapter -> ./custom-lora-adapter
 python merge.py                               # portable master -> ./merged-whisper-model
 python export.py --format all                 # ct2 | ggml | all -> ./exports
@@ -208,7 +208,9 @@ model at all; OpenWhispr covers them by typing into whatever app is focused.
 
 ## Conventions
 
-- Reading material for `record_data.py --text` goes in `scripts/` (gitignored, user-managed).
+- Reading material lives in `training-text/<language>/*.txt`, one directory per
+  language. The directory is the language label - nothing is inferred from a
+  filename, and a file outside a language directory is not listed at all.
 - `data/`, `dataset.csv`, and all model directories are gitignored — audio is personal,
   models are regenerable.
 - Tests mock only what is slow or external. Unit tests fake the processor; the integration

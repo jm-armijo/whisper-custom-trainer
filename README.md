@@ -12,17 +12,18 @@ Runs locally on Apple Silicon (Metal / MPS).
 ./setup.sh                                          # venv + dependencies + repos
 source venv/bin/activate
 
-python record_data.py --text scripts/es.txt --lang es   # read prompts aloud
-python record_data.py --text scripts/en.txt --lang en
+python record_data.py --text training-text/es/spanish_phonetic_training.txt --lang es
+python record_data.py --text training-text/en/general.txt --lang en
 
 python train.py                                     # LoRA adapter
 python merge.py                                     # portable master model
 ./convert.sh                                        # export + install
 ```
 
-Supply your own `scripts/*.txt`: any prose you are comfortable reading. Name the
-file for its language — `es.txt`, `en.txt` — and the web recorder can infer it
-too. It is
+Reading material lives in `training-text/<language>/*.txt` — one directory per
+language, `en/` and `es/`. The directory states the language, so a file can be
+named for what it contains rather than what tongue it is in. Supply any prose
+you are comfortable reading. It is
 split automatically into 10-25 word chunks at sentence ends, blank lines, and —
 for a sentence too long to fit — the last comma or similar pause in range, so a
 line rarely ends mid-clause. Leave a blank line between paragraphs and they will
@@ -129,7 +130,7 @@ venv/bin/python recorder_server.py                    # http://0.0.0.0:8080
 venv/bin/python recorder_server.py --port 9000        # anything is overridable
 ```
 
-With no flags it reads `scripts/`, writes clips to `data/` and rows to
+With no flags it reads `training-text/`, writes clips to `data/` and rows to
 `dataset.csv` — the same three paths `record_data.py` uses, which is what lets
 the two front ends share one dataset.
 
@@ -157,7 +158,7 @@ because the microphone will not work over plain HTTP.
 
 | Host path | In container | Why |
 |---|---|---|
-| `./scripts` | `/data/scripts` (read-only) | reading material you supply |
+| `./training-text` | `/data/scripts` (read-only) | reading material you supply |
 | `./data` | `/data/audio` | recorded `.wav` files **and** `dataset.csv` |
 
 Both are bind mounts, so takes survive `docker compose down` and a rebuild.
@@ -210,9 +211,12 @@ Two more variables belong to `docker-compose.yml` rather than the server:
 files it writes. Match them to your DietPi user, or the takes come back owned by
 someone the laptop cannot read.
 
-A script's **language comes from its filename**: `scripts/es.txt` records as
-Spanish, `en.txt` as English. Any other stem is listed in the picker but cannot
-be recorded, because a mislabelled row poisons the bilingual adapter.
+A script's **language comes from its directory**: everything under
+`training-text/es/` records as Spanish, `en/` as English. A file loose at the
+top level, or under any other directory name, is not listed at all — it has no
+language, and a mislabelled row poisons the bilingual adapter. Scripts are
+addressed by that qualified name (`es/general.txt`), so the same filename can
+appear under both languages.
 
 ### Reaching the box from the phone
 
@@ -335,7 +339,7 @@ dataset is touched, so a bad upload cannot clobber a good take on that line.
 ```bash
 curl -s localhost:8080/api/scripts
 curl -s -X POST --data-binary @take.wav \
-    localhost:8080/api/scripts/es.txt/chunks/0
+    localhost:8080/api/scripts/es/general.txt/chunks/0
 ```
 
 Errors come back as `{"message": "..."}` — 404 when something does not exist,

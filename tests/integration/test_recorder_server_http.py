@@ -42,9 +42,11 @@ def wav_bytes(seconds=1.0, sample_rate=16000):
 def server(tmp_path):
     """A live server on an ephemeral port, torn down with the test."""
     scripts = tmp_path / "scripts"
-    scripts.mkdir()
-    (scripts / "es.txt").write_text(script_of(4), encoding="utf8")
-    (scripts / "en.txt").write_text(script_of(3), encoding="utf8")
+    # The directory names the language, so nothing is inferred from a filename.
+    (scripts / "es").mkdir(parents=True)
+    (scripts / "en").mkdir(parents=True)
+    (scripts / "es" / "a.txt").write_text(script_of(4), encoding="utf8")
+    (scripts / "en" / "a.txt").write_text(script_of(3), encoding="utf8")
 
     audio = tmp_path / "data"
     audio.mkdir()
@@ -140,12 +142,12 @@ class TestListScripts:
     def test_returns_every_script(self, server):
         status, payload = call(f"{server.base}/api/scripts")
         assert status == 200
-        assert [row["name"] for row in payload["scripts"]] == ["en.txt", "es.txt"]
+        assert [row["name"] for row in payload["scripts"]] == ["en/a.txt", "es/a.txt"]
 
     def test_reports_progress_per_script(self, server):
         rows = call(f"{server.base}/api/scripts")[1]["scripts"]
         assert {row["name"]: row["recorded_count"] for row in rows} == {
-            "en.txt": 0, "es.txt": 0,
+            "en/a.txt": 0, "es/a.txt": 0,
         }
 
     def test_responds_as_json(self, server):
@@ -155,15 +157,15 @@ class TestListScripts:
 
 class TestOneScript:
     def test_returns_the_chunks(self, server):
-        status, payload = call(f"{server.base}/api/scripts/es.txt")
+        status, payload = call(f"{server.base}/api/scripts/es/a.txt")
         assert status == 200 and len(payload["chunks"]) == 4
 
     def test_each_chunk_carries_text_index_and_state(self, server):
-        chunk = call(f"{server.base}/api/scripts/es.txt")[1]["chunks"][0]
+        chunk = call(f"{server.base}/api/scripts/es/a.txt")[1]["chunks"][0]
         assert set(chunk) == {"index", "text", "recorded"}
 
     def test_an_unknown_script_is_a_404(self, server):
-        status, payload = call(f"{server.base}/api/scripts/absent.txt")
+        status, payload = call(f"{server.base}/api/scripts/es/absent.txt")
         assert status == 404 and "message" in payload
 
     def test_a_traversing_name_is_rejected(self, server):
@@ -182,22 +184,22 @@ class TestOneScript:
 class TestRecordingOverHttp:
     def test_a_posted_take_reaches_the_dataset(self, server):
         status, payload = call(
-            f"{server.base}/api/scripts/es.txt/chunks/0",
+            f"{server.base}/api/scripts/es/a.txt/chunks/0",
             method="POST", body=wav_bytes(), content_type="audio/wav",
         )
         assert status == 200 and payload["recorded"] is True
 
     def test_the_wav_lands_where_the_terminal_recorder_puts_it(self, server):
-        call(f"{server.base}/api/scripts/es.txt/chunks/2",
+        call(f"{server.base}/api/scripts/es/a.txt/chunks/2",
              method="POST", body=wav_bytes(), content_type="audio/wav")
 
         assert rs.clip_path(server.config.audio_dir, "es", 2).exists()
 
     def test_the_row_carries_the_chunk_text(self, server):
-        call(f"{server.base}/api/scripts/es.txt/chunks/1",
+        call(f"{server.base}/api/scripts/es/a.txt/chunks/1",
              method="POST", body=wav_bytes(), content_type="audio/wav")
 
-        chunks = call(f"{server.base}/api/scripts/es.txt")[1]["chunks"]
+        chunks = call(f"{server.base}/api/scripts/es/a.txt")[1]["chunks"]
         rows = list(csv.DictReader(
             server.config.csv_path.open(newline="", encoding="utf8")
         ))
@@ -207,28 +209,28 @@ class TestRecordingOverHttp:
         """This is the shape the browser's FormData actually sends."""
         body, content_type = multipart(wav_bytes())
         status, payload = call(
-            f"{server.base}/api/scripts/es.txt/chunks/0",
+            f"{server.base}/api/scripts/es/a.txt/chunks/0",
             method="POST", body=body, content_type=content_type,
         )
         assert status == 200 and payload["recorded"] is True
 
     def test_the_script_then_reports_the_line_recorded(self, server):
-        call(f"{server.base}/api/scripts/es.txt/chunks/0",
+        call(f"{server.base}/api/scripts/es/a.txt/chunks/0",
              method="POST", body=wav_bytes(), content_type="audio/wav")
 
-        chunks = call(f"{server.base}/api/scripts/es.txt")[1]["chunks"]
+        chunks = call(f"{server.base}/api/scripts/es/a.txt")[1]["chunks"]
         assert [chunk["recorded"] for chunk in chunks] == [True, False, False, False]
 
     def test_a_short_clip_is_refused_with_a_reason(self, server):
         status, payload = call(
-            f"{server.base}/api/scripts/es.txt/chunks/0",
+            f"{server.base}/api/scripts/es/a.txt/chunks/0",
             method="POST", body=wav_bytes(seconds=wp.MIN_CLIP_SECONDS / 2),
             content_type="audio/wav",
         )
         assert status == 400 and "too short" in payload["message"]
 
     def test_a_refused_clip_leaves_no_dataset_row(self, server):
-        call(f"{server.base}/api/scripts/es.txt/chunks/0",
+        call(f"{server.base}/api/scripts/es/a.txt/chunks/0",
              method="POST", body=wav_bytes(seconds=wp.MIN_CLIP_SECONDS / 2),
              content_type="audio/wav")
 
@@ -236,14 +238,14 @@ class TestRecordingOverHttp:
 
     def test_undecodable_bytes_are_refused_rather_than_crashing(self, server):
         status, payload = call(
-            f"{server.base}/api/scripts/es.txt/chunks/0",
+            f"{server.base}/api/scripts/es/a.txt/chunks/0",
             method="POST", body=b"this is not audio", content_type="audio/wav",
         )
         assert status == 400 and "message" in payload
 
     def test_an_index_past_the_end_is_refused(self, server):
         status, _ = call(
-            f"{server.base}/api/scripts/es.txt/chunks/99",
+            f"{server.base}/api/scripts/es/a.txt/chunks/99",
             method="POST", body=wav_bytes(), content_type="audio/wav",
         )
         assert status == 400
@@ -258,17 +260,17 @@ class TestRecordingOverHttp:
 
 class TestPlayback:
     def test_serves_the_stored_take_as_wav(self, server):
-        call(f"{server.base}/api/scripts/es.txt/chunks/0",
+        call(f"{server.base}/api/scripts/es/a.txt/chunks/0",
              method="POST", body=wav_bytes(), content_type="audio/wav")
 
-        status, payload = call(f"{server.base}/api/scripts/es.txt/chunks/0/audio")
+        status, payload = call(f"{server.base}/api/scripts/es/a.txt/chunks/0/audio")
         assert status == 200 and payload.startswith(b"RIFF")
 
     def test_the_served_clip_is_decodable_at_the_pipeline_rate(self, server):
-        call(f"{server.base}/api/scripts/es.txt/chunks/0",
+        call(f"{server.base}/api/scripts/es/a.txt/chunks/0",
              method="POST", body=wav_bytes(), content_type="audio/wav")
 
-        payload = call(f"{server.base}/api/scripts/es.txt/chunks/0/audio")[1]
+        payload = call(f"{server.base}/api/scripts/es/a.txt/chunks/0/audio")[1]
         info = sf.info(io.BytesIO(payload))
         assert (info.samplerate, info.channels, info.subtype) == (
             wp.SAMPLE_RATE, 1, "PCM_16",
@@ -276,40 +278,40 @@ class TestPlayback:
 
     def test_playback_is_not_cached(self, server):
         """A re-record must not play the previous take from the phone's cache."""
-        call(f"{server.base}/api/scripts/es.txt/chunks/0",
+        call(f"{server.base}/api/scripts/es/a.txt/chunks/0",
              method="POST", body=wav_bytes(), content_type="audio/wav")
 
-        url = f"{server.base}/api/scripts/es.txt/chunks/0/audio"
+        url = f"{server.base}/api/scripts/es/a.txt/chunks/0/audio"
         with urllib.request.urlopen(url, timeout=10) as response:
             assert response.headers["Cache-Control"] == "no-store"
 
     def test_an_unrecorded_line_is_a_404(self, server):
-        status, _ = call(f"{server.base}/api/scripts/es.txt/chunks/0/audio")
+        status, _ = call(f"{server.base}/api/scripts/es/a.txt/chunks/0/audio")
         assert status == 404
 
 
 class TestDeletingATake:
     def test_removes_the_clip(self, server):
-        call(f"{server.base}/api/scripts/es.txt/chunks/0",
+        call(f"{server.base}/api/scripts/es/a.txt/chunks/0",
              method="POST", body=wav_bytes(), content_type="audio/wav")
 
         status, payload = call(
-            f"{server.base}/api/scripts/es.txt/chunks/0", method="DELETE"
+            f"{server.base}/api/scripts/es/a.txt/chunks/0", method="DELETE"
         )
         assert status == 200 and payload["recorded"] is False
 
     def test_the_line_reopens_for_recording(self, server):
-        call(f"{server.base}/api/scripts/es.txt/chunks/0",
+        call(f"{server.base}/api/scripts/es/a.txt/chunks/0",
              method="POST", body=wav_bytes(), content_type="audio/wav")
-        call(f"{server.base}/api/scripts/es.txt/chunks/0", method="DELETE")
+        call(f"{server.base}/api/scripts/es/a.txt/chunks/0", method="DELETE")
 
-        chunks = call(f"{server.base}/api/scripts/es.txt")[1]["chunks"]
+        chunks = call(f"{server.base}/api/scripts/es/a.txt")[1]["chunks"]
         assert chunks[0]["recorded"] is False
 
     def test_the_dataset_row_goes_with_it(self, server):
-        call(f"{server.base}/api/scripts/es.txt/chunks/0",
+        call(f"{server.base}/api/scripts/es/a.txt/chunks/0",
              method="POST", body=wav_bytes(), content_type="audio/wav")
-        call(f"{server.base}/api/scripts/es.txt/chunks/0", method="DELETE")
+        call(f"{server.base}/api/scripts/es/a.txt/chunks/0", method="DELETE")
 
         rows = list(csv.DictReader(
             server.config.csv_path.open(newline="", encoding="utf8")
@@ -317,8 +319,8 @@ class TestDeletingATake:
         assert rows == []
 
     def test_a_repeated_delete_is_not_an_error(self, server):
-        call(f"{server.base}/api/scripts/es.txt/chunks/0", method="DELETE")
-        status, _ = call(f"{server.base}/api/scripts/es.txt/chunks/0", method="DELETE")
+        call(f"{server.base}/api/scripts/es/a.txt/chunks/0", method="DELETE")
+        status, _ = call(f"{server.base}/api/scripts/es/a.txt/chunks/0", method="DELETE")
         assert status == 200
 
 
@@ -327,9 +329,9 @@ class TestBothLanguagesShareOneDataset:
     recorder writes it, with the per-row language the bilingual adapter needs."""
 
     def test_takes_in_both_languages_land_in_one_csv(self, server):
-        call(f"{server.base}/api/scripts/es.txt/chunks/0",
+        call(f"{server.base}/api/scripts/es/a.txt/chunks/0",
              method="POST", body=wav_bytes(), content_type="audio/wav")
-        call(f"{server.base}/api/scripts/en.txt/chunks/0",
+        call(f"{server.base}/api/scripts/en/a.txt/chunks/0",
              method="POST", body=wav_bytes(), content_type="audio/wav")
 
         rows = list(csv.DictReader(
@@ -338,7 +340,7 @@ class TestBothLanguagesShareOneDataset:
         assert sorted(row["language"] for row in rows) == ["en", "es"]
 
     def test_the_columns_match_the_pipeline_contract(self, server):
-        call(f"{server.base}/api/scripts/es.txt/chunks/0",
+        call(f"{server.base}/api/scripts/es/a.txt/chunks/0",
              method="POST", body=wav_bytes(), content_type="audio/wav")
 
         reader = csv.DictReader(
@@ -347,9 +349,9 @@ class TestBothLanguagesShareOneDataset:
         assert tuple(reader.fieldnames) == wp.CSV_COLUMNS
 
     def test_the_same_index_in_each_language_is_a_separate_clip(self, server):
-        call(f"{server.base}/api/scripts/es.txt/chunks/0",
+        call(f"{server.base}/api/scripts/es/a.txt/chunks/0",
              method="POST", body=wav_bytes(), content_type="audio/wav")
-        call(f"{server.base}/api/scripts/en.txt/chunks/0",
+        call(f"{server.base}/api/scripts/en/a.txt/chunks/0",
              method="POST", body=wav_bytes(), content_type="audio/wav")
 
         assert (

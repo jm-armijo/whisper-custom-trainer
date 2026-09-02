@@ -161,8 +161,9 @@ def blob_literal(payload):
 def live_server(tmp_path):
     """A real recorder server the node process talks to over a real socket."""
     scripts = tmp_path / "scripts"
-    scripts.mkdir()
-    (scripts / "es.txt").write_text(
+    # The directory names the language, so nothing is inferred from a filename.
+    (scripts / "es").mkdir(parents=True)
+    (scripts / "es" / "a.txt").write_text(
         "\n\n".join(LINE.format(n=n) for n in range(4)), encoding="utf8"
     )
 
@@ -474,13 +475,13 @@ class TestTheClientReadsTheRealServerContract:
         console.log(JSON.stringify(await listScripts()));
         """, live_server)
         assert scripts == [
-            {"name": "es.txt", "language": "es", "recorded": 0, "total": 4}
+            {"name": "es/a.txt", "language": "es", "recorded": 0, "total": 4}
         ]
 
     def test_the_script_loads_its_chunk_text(self, live_server):
         loaded = run_node("""
         import { loadScript } from "./api.js";
-        console.log(JSON.stringify(await loadScript("es.txt")));
+        console.log(JSON.stringify(await loadScript("es/a.txt")));
         """, live_server)
         assert len(loaded["chunks"]) == 4
         assert all(chunk for chunk in loaded["chunks"]), loaded["chunks"]
@@ -488,15 +489,15 @@ class TestTheClientReadsTheRealServerContract:
     def test_a_recorded_line_comes_back_in_the_recorded_set(self, live_server):
         loaded = run_node(f"""
         import {{ loadScript, saveChunk }} from "./api.js";
-        await saveChunk("es.txt", 2, {blob_literal(wav_bytes(1.0))});
-        console.log(JSON.stringify(await loadScript("es.txt")));
+        await saveChunk("es/a.txt", 2, {blob_literal(wav_bytes(1.0))});
+        console.log(JSON.stringify(await loadScript("es/a.txt")));
         """, live_server)
         assert loaded["recorded"] == [2]
 
     def test_the_counts_track_a_saved_take(self, live_server):
         scripts = run_node(f"""
         import {{ listScripts, saveChunk }} from "./api.js";
-        await saveChunk("es.txt", 0, {blob_literal(wav_bytes(1.0))});
+        await saveChunk("es/a.txt", 0, {blob_literal(wav_bytes(1.0))});
         console.log(JSON.stringify(await listScripts()));
         """, live_server)
         assert scripts[0]["recorded"] == 1
@@ -504,9 +505,9 @@ class TestTheClientReadsTheRealServerContract:
     def test_a_deleted_take_reopens_the_line(self, live_server):
         loaded = run_node(f"""
         import {{ deleteChunk, loadScript, saveChunk }} from "./api.js";
-        await saveChunk("es.txt", 1, {blob_literal(wav_bytes(1.0))});
-        await deleteChunk("es.txt", 1);
-        console.log(JSON.stringify(await loadScript("es.txt")));
+        await saveChunk("es/a.txt", 1, {blob_literal(wav_bytes(1.0))});
+        await deleteChunk("es/a.txt", 1);
+        console.log(JSON.stringify(await loadScript("es/a.txt")));
         """, live_server)
         assert loaded["recorded"] == []
 
@@ -522,7 +523,7 @@ class TestTheClientUsesTheServersDuration:
         the too_long flag never reached the caller at all."""
         saved = run_node(f"""
         import {{ saveChunk }} from "./api.js";
-        const saved = await saveChunk("es.txt", 0, {blob_literal(wav_bytes(1.0))});
+        const saved = await saveChunk("es/a.txt", 0, {blob_literal(wav_bytes(1.0))});
         console.log(JSON.stringify(saved));
         """, live_server)
         assert saved["seconds"] == pytest.approx(1.0, abs=0.05)
@@ -532,7 +533,7 @@ class TestTheClientUsesTheServersDuration:
         payload = wav_bytes(wp.MAX_CLIP_SECONDS + 1)
         saved = run_node(f"""
         import {{ saveChunk }} from "./api.js";
-        const saved = await saveChunk("es.txt", 0, {blob_literal(payload)});
+        const saved = await saveChunk("es/a.txt", 0, {blob_literal(payload)});
         console.log(JSON.stringify(saved));
         """, live_server)
         assert saved["tooLong"] is True
@@ -540,7 +541,7 @@ class TestTheClientUsesTheServersDuration:
     def test_a_clip_inside_the_window_is_not_flagged(self, live_server):
         saved = run_node(f"""
         import {{ saveChunk }} from "./api.js";
-        const saved = await saveChunk("es.txt", 0, {blob_literal(wav_bytes(1.0))});
+        const saved = await saveChunk("es/a.txt", 0, {blob_literal(wav_bytes(1.0))});
         console.log(JSON.stringify(saved));
         """, live_server)
         assert saved["tooLong"] is False
@@ -553,8 +554,46 @@ class TestTheClientUsesTheServersDuration:
         import {{ saveChunk }} from "./api.js";
         let message = null;
         try {{
-          await saveChunk("es.txt", 0, {blob_literal(payload)});
+          await saveChunk("es/a.txt", 0, {blob_literal(payload)});
         }} catch (error) {{ message = error.message; }}
         console.log(JSON.stringify({{ message }}));
         """, live_server)
         assert "too short" in (result["message"] or "")
+
+
+class TestTheTitleNamesTheFile:
+    """The picker and the title both identify a script; the language code was
+    redundant there and told the reader nothing they had not just clicked."""
+
+    def test_the_title_carries_the_filename(self):
+        view = run_node("""
+        import { ScriptSession, buildView, IDLE } from "./state.js";
+        const session = new ScriptSession({
+          name: "spanish_phonetic_training.txt", language: "es",
+          chunks: ["one", "two"], recorded: new Set([0]),
+        });
+        console.log(JSON.stringify(buildView({ session, scripts: [], state: IDLE })));
+        """)
+        assert "spanish_phonetic_training.txt" in view["title"]
+
+    def test_the_title_does_not_repeat_the_language_code(self):
+        view = run_node("""
+        import { ScriptSession, buildView, IDLE } from "./state.js";
+        const session = new ScriptSession({
+          name: "spanish_phonetic_training.txt", language: "es",
+          chunks: ["one", "two"], recorded: new Set([0]),
+        });
+        console.log(JSON.stringify(buildView({ session, scripts: [], state: IDLE })));
+        """)
+        assert " · es · " not in view["title"]
+
+    def test_the_title_still_reports_progress(self):
+        view = run_node("""
+        import { ScriptSession, buildView, IDLE } from "./state.js";
+        const session = new ScriptSession({
+          name: "en/a.txt", language: "en",
+          chunks: ["one", "two", "three"], recorded: new Set([0, 1]),
+        });
+        console.log(JSON.stringify(buildView({ session, scripts: [], state: IDLE })));
+        """)
+        assert "2/3" in view["title"]

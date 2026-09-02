@@ -4,12 +4,19 @@
 // reconciling with recorder_server.py is a one-file edit rather than a hunt
 // through the view. Nothing else in the frontend may call fetch.
 
+// A script name is qualified by its language directory ("es/general.txt"), so
+// each segment is escaped on its own: encodeURIComponent over the whole name
+// turns the separator into %2F, which the server's routes - matched before
+// unquote - do not accept. Escaping per segment keeps every other character
+// protected while leaving the one structural slash literal.
+const scriptPath = (name) => name.split("/").map(encodeURIComponent).join("/");
+
 export const ENDPOINTS = {
   scripts: "/api/scripts",
-  script: (name) => `/api/scripts/${encodeURIComponent(name)}`,
-  chunk: (name, index) => `/api/scripts/${encodeURIComponent(name)}/chunks/${index}`,
+  script: (name) => `/api/scripts/${scriptPath(name)}`,
+  chunk: (name, index) => `/api/scripts/${scriptPath(name)}/chunks/${index}`,
   chunkAudio: (name, index) =>
-    `/api/scripts/${encodeURIComponent(name)}/chunks/${index}/audio`,
+    `/api/scripts/${scriptPath(name)}/chunks/${index}/audio`,
 };
 
 // The server's field names, matching recorder_scripts.script_progress and
