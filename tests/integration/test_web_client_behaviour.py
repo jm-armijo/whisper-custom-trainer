@@ -61,7 +61,12 @@ function element(id) {
       toggle(name, on) { on ? this._set.add(name) : this._set.delete(name); },
       contains(name) { return this._set.has(name); },
     },
-    setAttribute() {}, appendChild(child) { this.children.push(child); },
+    // Kept rather than discarded: a glyph is the only visible label on the
+    // transport keys, so aria-label is the accessible name, and a test that
+    // could not read it back could not tell a mislabelled key from a correct one.
+    attributes: {},
+    setAttribute(name, value) { this.attributes[name] = value; },
+    appendChild(child) { this.children.push(child); },
     append(...kids) { this.children.push(...kids); },
     replaceChildren() { this.children = []; },
     addEventListener(event, handler) { this.handlers[event] = handler; },
@@ -163,15 +168,18 @@ globalThis.window = {
 // drives it: through timeupdate, never through Web Audio.
 globalThis.Audio = class {
   constructor() {
-    this.currentTime = 0; this.duration = NaN; this.handlers = {};
+    this.currentTime = 0; this.duration = NaN; this.handlers = {}; this.calls = [];
     // app.js keeps its one element private, which is the point of it; a test
     // asking what the playhead did needs a handle on that same instance.
     globalThis.__player = this;
   }
   addEventListener(event, handler) { this.handlers[event] = handler; }
-  pause() {}
-  load() {}
-  play() { return Promise.resolve(); }
+  // The deck's three keys are only distinguishable by what they do to the
+  // element: pause and resume both leave PLAYING/PAUSED behind, so a test
+  // proving the clip was held rather than restarted has to see the calls.
+  pause() { this.calls.push("pause"); }
+  load() { this.calls.push("load"); }
+  play() { this.calls.push("play"); return Promise.resolve(); }
 };
 
 // MediaRecorder and getUserMedia, recording what the controller asked of them.
@@ -468,7 +476,7 @@ class TestTheControllerReleasesTheMicrophone:
         __tracks.push({ stop: () => stopped.push("mic") });
         await button("btn-record").handlers.click();
         await __settle();
-        await button("btn-record").handlers.click();
+        await button("btn-stop").handlers.click();
         await __settle();
         console.log(JSON.stringify({ stopped, state: button("status-state").textContent }));
         """, live_server)
@@ -479,7 +487,7 @@ class TestTheControllerReleasesTheMicrophone:
         __tracks.push({ stop: () => {} });
         await button("btn-record").handlers.click();
         await __settle();
-        await button("btn-record").handlers.click();
+        await button("btn-stop").handlers.click();
         await __settle();
         console.log(JSON.stringify({ state: button("status-state").textContent }));
         """, live_server)
@@ -491,7 +499,7 @@ class TestTheControllerReleasesTheMicrophone:
         __tracks.push({ stop: () => {} });
         await button("btn-record").handlers.click();
         await __settle();
-        await button("btn-record").handlers.click();
+        await button("btn-stop").handlers.click();
         await __settle();
         console.log(JSON.stringify({ message: button("message").textContent }));
         """, live_server)
@@ -523,7 +531,7 @@ class TestASecondTapCannotRaceAnUpload:
         __tracks.push({ stop: () => {} });
         await button("btn-record").handlers.click();
         await __settle();
-        button("btn-record").handlers.click();
+        button("btn-stop").handlers.click();
         await __settle();
         console.log(JSON.stringify({ during: button("status-state").textContent }));
         """, live_server)
@@ -535,7 +543,7 @@ class TestASecondTapCannotRaceAnUpload:
         __tracks.push({ stop: () => {} });
         await button("btn-record").handlers.click();
         await __settle();
-        button("btn-record").handlers.click();
+        button("btn-stop").handlers.click();
         await __settle();
         await button("btn-record").handlers.click();
         await __settle();
@@ -549,7 +557,7 @@ class TestASecondTapCannotRaceAnUpload:
         __tracks.push({ stop: () => {} });
         await button("btn-record").handlers.click();
         await __settle();
-        button("btn-record").handlers.click();
+        button("btn-stop").handlers.click();
         await __settle();
         console.log(JSON.stringify({ disabled: button("btn-record").disabled }));
         """, live_server)
@@ -808,7 +816,7 @@ class TestTheLiveWaveformIsTornDown:
         await button("btn-record").handlers.click();
         await __settle();
         const strokes = __drawn.filter((call) => call[0] === "stroke").length;
-        await button("btn-record").handlers.click();
+        await button("btn-stop").handlers.click();
         await __settle();
         console.log(JSON.stringify({ strokes, opened: __audio.opened }));
         """, live_server)
@@ -820,7 +828,7 @@ class TestTheLiveWaveformIsTornDown:
         __tracks.push({ stop: () => {} });
         await button("btn-record").handlers.click();
         await __settle();
-        await button("btn-record").handlers.click();
+        await button("btn-stop").handlers.click();
         await __settle();
         console.log(JSON.stringify({ ...__audio }));
         """, live_server)
@@ -835,7 +843,7 @@ class TestTheLiveWaveformIsTornDown:
         __tracks.push({ stop: () => {} });
         await button("btn-record").handlers.click();
         await __settle();
-        await button("btn-record").handlers.click();
+        await button("btn-stop").handlers.click();
         await __settle();
         const after = __frames.scheduled;
         await __settle();
@@ -856,7 +864,7 @@ class TestTheLiveWaveformIsTornDown:
         for (let take = 0; take < 10; take += 1) {
           await button("btn-record").handlers.click();
           await __settle();
-          await button("btn-record").handlers.click();
+          await button("btn-stop").handlers.click();
           await __settle();
         }
         console.log(JSON.stringify({ ...__audio, live: __frames.live.size }));
@@ -872,7 +880,7 @@ class TestTheLiveWaveformIsTornDown:
         __tracks.push({ stop: () => {} });
         await button("btn-record").handlers.click();
         await __settle();
-        await button("btn-record").handlers.click();
+        await button("btn-stop").handlers.click();
         await __settle();
         console.log(JSON.stringify({ resumed: __audio.resumed }));
         """, live_server)
@@ -890,7 +898,7 @@ class TestARefusedWaveformStillRecords:
         __tracks.push({ stop: () => {} });
         await button("btn-record").handlers.click();
         await __settle();
-        await button("btn-record").handlers.click();
+        await button("btn-stop").handlers.click();
         await __settle();
         console.log(JSON.stringify({ message: button("message").textContent }));
         """, live_server)
@@ -902,7 +910,7 @@ class TestARefusedWaveformStillRecords:
         __tracks.push({ stop: () => {} });
         await button("btn-record").handlers.click();
         await __settle();
-        await button("btn-record").handlers.click();
+        await button("btn-stop").handlers.click();
         await __settle();
         console.log(JSON.stringify({ message: button("message").textContent }));
         """, live_server)
@@ -916,7 +924,7 @@ class TestARefusedWaveformStillRecords:
         __tracks.push({ stop: () => {} });
         await button("btn-record").handlers.click();
         await __settle();
-        await button("btn-record").handlers.click();
+        await button("btn-stop").handlers.click();
         await __settle();
         console.log(JSON.stringify({
           message: button("message").textContent,
@@ -940,7 +948,7 @@ class TestThePlaybackWaveform:
     __tracks.push({ stop: () => {} });
     await button("btn-record").handlers.click();
     await __settle();
-    await button("btn-record").handlers.click();
+    await button("btn-stop").handlers.click();
     await __settle();
     button("btn-prev").handlers.click();
     await __settle();
@@ -1028,7 +1036,7 @@ class TestThePlaybackWaveform:
         await button("btn-record").handlers.click();
         await __settle();
         const hiddenDuringRecord = __nodes.get("waveform").hidden;
-        await button("btn-record").handlers.click();
+        await button("btn-stop").handlers.click();
         await __settle();
         console.log(JSON.stringify({
           hiddenDuringRecord, hiddenAfter: __nodes.get("waveform").hidden,
@@ -1036,3 +1044,202 @@ class TestThePlaybackWaveform:
         """, live_server)
         assert result["hiddenDuringRecord"] is False, "the live trace was hidden"
         assert result["hiddenAfter"] is True, "the strip stayed up after the take"
+
+
+class TestTheTransportBehavesLikeACassetteDeck:
+    """Play and pause share one key, Stop serves both transports, and Record
+    only ever starts a take. The contract worth pinning is that a key's meaning
+    does not change under the thumb between presses - the one deliberate
+    exception being play/pause, which is the deck this is modelled on."""
+
+    # Same rhythm as the playback class: a saved take advances the cursor, so
+    # stepping back is what puts the cursor on the line that now has audio.
+    RECORD_ONE = """
+    __tracks.push({ stop: () => {} });
+    await button("btn-record").handlers.click();
+    await __settle();
+    await button("btn-stop").handlers.click();
+    await __settle();
+    button("btn-prev").handlers.click();
+    await __settle();
+    """
+
+    def test_pausing_holds_the_clip_rather_than_restarting_it(self, live_server):
+        """The whole point of one key: the second press must pause what is
+        playing, not start the take over."""
+        result = drive_app(self.RECORD_ONE + """
+        await button("btn-play").handlers.click();
+        await __settle();
+        globalThis.__player.calls.length = 0;
+        await button("btn-play").handlers.click();
+        await __settle();
+        console.log(JSON.stringify({
+          calls: globalThis.__player.calls,
+          state: button("status-state").textContent,
+          legend: button("status-legend").textContent,
+        }));
+        """, live_server)
+        assert result["calls"] == ["pause"], result["calls"]
+        assert "paused" in result["legend"]
+
+    def test_the_third_press_resumes_without_reloading_the_clip(self, live_server):
+        """Resume is play() on the element as it stands. A load() here would
+        mean the take was fetched again and restarted from zero."""
+        result = drive_app(self.RECORD_ONE + """
+        await button("btn-play").handlers.click();
+        await __settle();
+        await button("btn-play").handlers.click();
+        await __settle();
+        globalThis.__player.calls.length = 0;
+        await button("btn-play").handlers.click();
+        await __settle();
+        console.log(JSON.stringify({
+          calls: globalThis.__player.calls,
+          legend: button("status-legend").textContent,
+        }));
+        """, live_server)
+        assert result["calls"] == ["play"], result["calls"]
+        assert "playing" in result["legend"]
+
+    def test_the_key_says_what_its_next_press_will_do(self, live_server):
+        """A glyph is the only label on these keys, so it has to track the
+        state; a pause glyph over a paused clip is a lie about the next tap."""
+        result = drive_app(self.RECORD_ONE + """
+        const face = () => ({
+          glyph: button("btn-play").textContent,
+          label: button("btn-play").attributes["aria-label"],
+        });
+        const stopped = face();
+        await button("btn-play").handlers.click();
+        await __settle();
+        const playing = face();
+        await button("btn-play").handlers.click();
+        await __settle();
+        console.log(JSON.stringify({ stopped, playing, paused: face() }));
+        """, live_server)
+        assert result["stopped"] == {"glyph": "▶", "label": "Play"}
+        assert result["playing"] == {"glyph": "⏸", "label": "Pause"}
+        assert result["paused"] == {"glyph": "▶", "label": "Resume"}
+
+    def test_stop_rewinds_so_the_next_play_is_the_whole_take(self, live_server):
+        result = drive_app(self.RECORD_ONE + """
+        await button("btn-play").handlers.click();
+        await __settle();
+        globalThis.__player.currentTime = 0.5;
+        await button("btn-stop").handlers.click();
+        await __settle();
+        console.log(JSON.stringify({
+          at: globalThis.__player.currentTime,
+          legend: button("status-legend").textContent,
+        }));
+        """, live_server)
+        assert result["at"] == 0
+        assert "record" in result["legend"], result["legend"]
+
+    def test_stop_ends_a_take_as_well_as_a_clip(self, live_server):
+        """One glyph, both transports. They can never run at once, so the key
+        never has to choose between two live things."""
+        result = drive_app("""
+        __tracks.push({ stop: () => {} });
+        await button("btn-record").handlers.click();
+        await __settle();
+        await button("btn-stop").handlers.click();
+        await __settle();
+        console.log(JSON.stringify({
+          state: button("status-state").textContent,
+          message: button("message").textContent,
+        }));
+        """, live_server)
+        assert result["state"] == "IDLE"
+        assert result["message"].startswith("saved "), result["message"]
+
+    def test_record_never_stops_a_take(self, live_server):
+        """Record used to toggle. Under a thumb that is a key whose meaning
+        changes between presses, which is what the separate Stop is for: a
+        second press must not end the take."""
+        result = drive_app("""
+        __tracks.push({ stop: () => {} });
+        await button("btn-record").handlers.click();
+        await __settle();
+        await button("btn-record").handlers.click();
+        await __settle();
+        const during = button("status-state").textContent;
+        // Closed out deliberately: a take left running holds the waveform's
+        // animation frame open, and node will not exit with one still armed.
+        await button("btn-stop").handlers.click();
+        await __settle();
+        console.log(JSON.stringify({ during }));
+        """, live_server)
+        assert result["during"] == "RECORDING"
+
+    def test_a_take_stops_whatever_was_playing(self, live_server):
+        """Two live transports would leave Stop with two meanings, so the clip
+        yields to the microphone."""
+        result = drive_app(self.RECORD_ONE + """
+        await button("btn-play").handlers.click();
+        await __settle();
+        await button("btn-record").handlers.click();
+        await __settle();
+        const state = button("status-state").textContent;
+        const glyph = button("btn-play").textContent;
+        // See test_record_never_stops_a_take: the take has to be closed out or
+        // its animation frame keeps node alive past the end of the script.
+        await button("btn-stop").handlers.click();
+        await __settle();
+        console.log(JSON.stringify({ state, glyph }));
+        """, live_server)
+        assert result["state"] == "RECORDING"
+        assert result["glyph"] == "▶", "the play key still offered to pause"
+
+    def test_stop_and_record_next_saves_then_arms_the_following_line(
+        self, live_server
+    ):
+        result = drive_app("""
+        __tracks.push({ stop: () => {} });
+        button("btn-next").handlers.click();
+        await __settle();
+        const from = button("title").textContent;
+        await button("btn-record").handlers.click();
+        await __settle();
+        await button("btn-next-take").handlers.click();
+        await __settle();
+        const armed = {
+          from,
+          title: button("title").textContent,
+          state: button("status-state").textContent,
+          opens: __record.filter((entry) => entry === "getUserMedia").length,
+        };
+        // See test_record_never_stops_a_take: node will not exit while the
+        // newly armed take still holds an animation frame.
+        await button("btn-stop").handlers.click();
+        await __settle();
+        console.log(JSON.stringify(armed));
+        """, live_server)
+        assert result["state"] == "RECORDING", "the next line was never armed"
+        assert result["opens"] == 2, "the second take never opened the mic"
+        assert "1/" in result["title"], result["title"]
+
+    def test_a_failed_upload_leaves_the_cursor_on_the_line_to_redo(
+        self, live_server
+    ):
+        """Advancing on a take that never landed would silently skip the line;
+        the recorder would report progress the dataset does not have."""
+        result = drive_app("""
+        __tracks.push({ stop: () => {} });
+        const before = globalThis.fetch;
+        globalThis.fetch = (url, options) => (
+          options && options.method === "POST"
+            ? Promise.reject(new Error("no network"))
+            : before(url, options)
+        );
+        await button("btn-record").handlers.click();
+        await __settle();
+        await button("btn-next-take").handlers.click();
+        await __settle();
+        console.log(JSON.stringify({
+          state: button("status-state").textContent,
+          title: button("title").textContent,
+        }));
+        """, live_server)
+        assert result["state"] == "IDLE", "a failed save armed the next line anyway"
+        assert "0/" in result["title"], result["title"]

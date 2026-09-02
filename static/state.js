@@ -17,6 +17,15 @@ export const RECORDING = "recording";
 // one still uploading.
 export const UPLOADING = "uploading";
 
+// Playback state is tracked apart from the capture states above, not as a
+// fourth value of `state`. The two are orthogonal - isBusy() asks whether the
+// microphone is committed, and playing a take back does not commit it - so
+// folding PLAYING into that enum would have made every isBusy() caller wrong
+// about a line being played back.
+export const STOPPED = "stopped";
+export const PLAYING = "playing";
+export const PAUSED = "paused";
+
 // Deliberately absent: MIN_CLIP_SECONDS and MAX_CLIP_SECONDS.
 //
 // Both used to be hardcoded here alongside whisper_pipeline's copies, with
@@ -134,7 +143,15 @@ export class ScriptSession {
  * The view decides pixels from this; the title text is content rather than
  * presentation, so it is composed here where it can be asserted headlessly.
  */
-export function buildView({ session, scripts, state, tick = 0, elapsed = 0, message = "" }) {
+export function buildView({
+  session,
+  scripts,
+  state,
+  playback = STOPPED,
+  tick = 0,
+  elapsed = 0,
+  message = "",
+}) {
   if (!session) {
     return {
       title: " no script selected ",
@@ -143,11 +160,12 @@ export function buildView({ session, scripts, state, tick = 0, elapsed = 0, mess
       recorded: new Set(),
       cursor: 0,
       state,
+      playback,
       tick,
       elapsed,
       message,
       scripts: scriptEntries(scripts, null),
-      legend: legendFor(state),
+      legend: legendFor(state, playback),
     };
   }
 
@@ -160,21 +178,32 @@ export function buildView({ session, scripts, state, tick = 0, elapsed = 0, mess
     recorded: session.recorded,
     cursor: session.cursor,
     state,
+    playback,
     tick,
     elapsed,
     message,
     scripts: scriptEntries(scripts, session.name),
-    legend: legendFor(state),
+    legend: legendFor(state, playback),
   };
 }
 
 const LEGENDS = {
-  [IDLE]: "record · redo · play · prev · next",
+  [IDLE]: "record · play · redo · prev · next",
   [RECORDING]: "stop to save the take",
   [UPLOADING]: "saving the take…",
 };
 
-function legendFor(state) {
+// Playback runs alongside IDLE, so what the user is doing right now is the
+// clip, not the cursor - the transport legend wins while it is not stopped.
+const PLAYBACK_LEGENDS = {
+  [PLAYING]: "playing · pause · stop",
+  [PAUSED]: "paused · play to resume · stop",
+};
+
+function legendFor(state, playback = STOPPED) {
+  if (state === IDLE && PLAYBACK_LEGENDS[playback]) {
+    return PLAYBACK_LEGENDS[playback];
+  }
   return LEGENDS[state] || LEGENDS[IDLE];
 }
 

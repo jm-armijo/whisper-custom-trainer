@@ -15,7 +15,10 @@ import {
 } from "./waveform.js";
 import {
   IDLE,
+  PAUSED,
+  PLAYING,
   RECORDING,
+  STOPPED,
   UPLOADING,
   ScriptSession,
   buildView,
@@ -34,6 +37,9 @@ const app = {
   scripts: [],
   session: null,
   state: IDLE,
+  // Tracked separately from `state`: a clip playing does not commit the
+  // microphone, so it must not read as busy.
+  playback: STOPPED,
   tick: 0,
   message: "",
   startedAt: 0,
@@ -111,6 +117,7 @@ function repaint({ scroll = false } = {}) {
     session: app.session,
     scripts: app.scripts,
     state: app.state,
+    playback: app.playback,
     tick: app.tick,
     elapsed: app.state === RECORDING ? (Date.now() - app.startedAt) / 1000 : 0,
     message: app.message,
@@ -175,15 +182,14 @@ function move(action) {
   repaint({ scroll: true });
 }
 
-async function toggleRecord() {
-  if (app.state === RECORDING) {
-    await stopRecording();
-    return;
-  }
-  // A tap landing while the previous take is still uploading does nothing.
-  // Falling through to startRecording here is what let a second tap capture
-  // over an in-flight upload, so two takes raced for one line.
-  if (app.state === UPLOADING) {
+/** Record only ever starts a take; Stop is its own button now.
+ *
+ * A tap landing while the previous take is still uploading does nothing.
+ * Falling through to startRecording here is what let a second tap capture over
+ * an in-flight upload, so two takes raced for one line.
+ */
+async function record() {
+  if (isBusy(app.state)) {
     return;
   }
   await startRecording();
@@ -197,6 +203,9 @@ async function startRecording() {
     say("this browser cannot capture audio - needs getUserMedia over https or localhost");
     return;
   }
+  // A take and a clip must never run at once: Stop serves both, so two live
+  // transports would leave one button with two meanings. Playback yields.
+  stopPlayback();
   // A new take replaces whatever the playback strip was showing.
   stopPlaybackWaveform();
   await guard(async () => {
@@ -229,7 +238,7 @@ async function stopRecording() {
 
   // Paint UPLOADING before awaiting the POST, not after. Setting the state and
   // going straight into the await left the screen reading RECORDING with a
-  // frozen dot for the whole of a slow phone upload, while toggleRecord already
+  // frozen dot for the whole of a slow phone upload, while record() already
   // saw a state that let a second tap start a new take over the in-flight one.
   const index = app.session.cursor;
   app.state = UPLOADING;
@@ -310,7 +319,13 @@ function audioElement() {
     // playback the reused element exists to protect.
     player.addEventListener("timeupdate", drawPlayhead);
     player.addEventListener("durationchange", drawPlayhead);
-    player.addEventListener("ended", drawPlayhead);
+    player.addEventListener("ended", () => {
+      drawPlayhead();
+      // The clip ran to its end on its own; the transport is idle again and
+      // the buttons must stop offering Pause and Stop for it.
+      app.playback = STOPPED;
+      repaint();
+    });
   }
   return player;
 }
@@ -367,7 +382,27 @@ async function drawPlaybackWaveform(name, index, token) {
   }
 }
 
-function play() {
+/** The play/pause key: plays, pauses what is playing, resumes what is paused.
+ *
+ * One key for the three because that is the deck it is modelled on. Resume is
+ * not a re-play: the clip is still loaded in the element, so play() continues
+ * from where pause left it rather than fetching the take again.
+ */
+function playPause() {
+  if (app.playback === PLAYING) {
+    pause();
+    return;
+  }
+  if (app.playback === PAUSED && player) {
+    player.play().then(
+      () => {
+        app.playback = PLAYING;
+        repaint();
+      },
+      () => say("could not resume playback"),
+    );
+    return;
+  }
   if (!app.session || !app.session.isRecorded(app.session.cursor)) {
     say("nothing recorded on this line yet");
     return;
@@ -386,13 +421,21 @@ function play() {
   drawPlaybackWaveform(app.session.name, index, playbackToken);
 
   element.play().then(
-    () => say(`played line ${index + 1}`),
+    () => {
+      app.playback = PLAYING;
+      repaint();
+      say(`played line ${index + 1}`);
+    },
     (error) => {
       // A second tap calls load(), which rejects the first tap's still-pending
       // play() with AbortError. That older promise settling must not report a
       // failure over the newer take that is playing correctly - with one
       // reused element both handlers run, and the last to settle wins.
       if (error.name === "AbortError") return;
+      // A rejected play must not leave the transport reading PLAYING: the
+      // buttons would offer Pause and Stop for a clip that never started.
+      app.playback = STOPPED;
+      repaint();
       say(error.name === "NotAllowedError"
         ? "tap play again to allow audio"
         : `could not play that take: ${error.message}`);
@@ -400,10 +443,81 @@ function play() {
   );
 }
 
+/** Hold the clip where it is, keeping it loaded so the same key resumes it. */
+function pause() {
+  if (app.playback !== PLAYING || !player) {
+    return;
+  }
+  player.pause();
+  app.playback = PAUSED;
+  repaint();
+  say("paused");
+}
+
+/** Stop whichever transport is running.
+ *
+ * One button for both because that is what the glyph means on a deck, and
+ * because the two can never run at once: recording is refused while a clip
+ * plays and play is disabled while a take records.
+ */
+async function stop() {
+  if (app.state === RECORDING) {
+    await stopRecording();
+    return;
+  }
+  stopPlayback();
+}
+
+function stopPlayback() {
+  if (app.playback === STOPPED || !player) {
+    return;
+  }
+  player.pause();
+  // Rewound rather than left mid-clip: Stop on a deck returns to the start,
+  // and the next Play on this line should be the whole take again.
+  player.currentTime = 0;
+  app.playback = STOPPED;
+  stopPlaybackWaveform();
+  repaint();
+  say("stopped");
+}
+
+/** Save this take and arm the next line in one press.
+ *
+ * The read-record-read rhythm otherwise costs two taps per line with a look
+ * down at the screen between them. Awaiting stopRecording is what makes this
+ * safe: it returns only once the upload has landed, so the cursor never moves
+ * off a line whose take is still in flight.
+ */
+async function stopAndRecordNext() {
+  if (app.state !== RECORDING || !app.session) {
+    return;
+  }
+  // Captured before the stop, because a successful save advances the cursor
+  // itself: asking isRecorded(cursor) afterwards asks about the *next* line,
+  // which is unrecorded either way, so the button armed nothing on success.
+  const index = app.session.cursor;
+  await stopRecording();
+  // Only go on if the take actually saved. A failed upload leaves the cursor
+  // put, so the line can be redone rather than silently skipped.
+  if (!app.session.isRecorded(index)) {
+    return;
+  }
+  // No move() here: saveTake already stepped down. Moving again would skip the
+  // line this button exists to start recording.
+  if (index >= app.session.chunks.length - 1) {
+    return;
+  }
+  repaint({ scroll: true });
+  await startRecording();
+}
+
 function bindControls() {
-  dom.recordButton.addEventListener("click", toggleRecord);
+  dom.recordButton.addEventListener("click", record);
   dom.redoButton.addEventListener("click", redo);
-  dom.playButton.addEventListener("click", play);
+  dom.playButton.addEventListener("click", playPause);
+  dom.stopButton.addEventListener("click", stop);
+  dom.nextTakeButton.addEventListener("click", stopAndRecordNext);
   dom.prevButton.addEventListener("click", () => move("up"));
   dom.nextButton.addEventListener("click", () => move("down"));
   dom.menuToggle.addEventListener("click", () => setMenu(!app.menuOpen));

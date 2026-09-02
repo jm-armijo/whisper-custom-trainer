@@ -47,12 +47,31 @@
         <span id="status-legend" class="status-legend"></span>
       </div>
 
+      <!-- Transport first, in cassette-deck order, then the cursor controls.
+           A glyph is not a name a screen reader can announce, so each key
+           carries its own aria-label; the view keeps the play key's label in
+           step with what its next press will do. -->
+      <div class="controls controls--transport">
+        <!-- One key for both, the way a cassette deck pairs them: it plays,
+             it pauses what is playing, and it resumes what is paused. Its
+             glyph and accessible name are set by the view from the transport
+             state, so the label always says what the next press will do. -->
+        <button id="btn-play" class="control control--transport" type="button"
+                aria-label="Play">▶</button>
+        <button id="btn-stop" class="control control--transport" type="button"
+                aria-label="Stop">⏹</button>
+        <button id="btn-record" class="control control--transport control--record" type="button"
+                aria-label="Record">⏺</button>
+        <!-- Stop and record as one press: the two glyphs together are what the
+             button does, in the order it does it. -->
+        <button id="btn-next-take" class="control control--transport control--next-take"
+                type="button" aria-label="Stop and record next">⏹⏺</button>
+      </div>
+
       <div class="controls">
         <button id="btn-prev" class="control" type="button">Prev</button>
-        <button id="btn-record" class="control control--record" type="button">Record</button>
         <button id="btn-next" class="control" type="button">Next</button>
         <button id="btn-redo" class="control" type="button">Redo</button>
-        <button id="btn-play" class="control" type="button">Play</button>
       </div>
     </footer>
 

@@ -324,9 +324,16 @@ body {
 
 .controls {
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   gap: 0.4rem;
   padding: 0.6rem 0.75rem;
+}
+
+/* The transport keys in one row, like a deck: play/pause, stop, record, and
+ * the combined stop-and-record-next. */
+.controls--transport {
+  grid-template-columns: repeat(4, 1fr);
+  padding-bottom: 0;
 }
 
 .control {
@@ -345,6 +352,21 @@ body {
 .control:disabled {
   opacity: 0.35;
   cursor: default;
+}
+
+/* The glyphs carry the meaning, so they are set large enough to read at a
+ * glance from reading distance - the button's accessible name lives in its
+ * aria-label, not in this text. */
+.control--transport {
+  font-size: 1.35rem;
+  line-height: 1;
+  padding: 0.45rem 0.25rem;
+}
+
+/* Two glyphs share this key, so it must not outgrow the single-glyph ones. */
+.control--next-take {
+  font-size: 1.1rem;
+  letter-spacing: -0.08em;
 }
 
 .control--record {
@@ -389,13 +411,10 @@ body {
     font-size: 1.15rem;
   }
 
-  .controls {
-    grid-template-columns: repeat(3, 1fr);
-  }
-
-  .control--record {
-    grid-column: span 3;
-    order: -1;
+  /* The transport keeps its four-across row on a phone: they are the buttons
+   * used mid-take, and reflowing them would move the key under the thumb. */
+  .control--transport {
+    font-size: 1.5rem;
   }
 }
 

@@ -4,7 +4,14 @@
 // geometry; knows nothing of fetch, MediaRecorder, or what makes a chunk
 // count as recorded. Every function here takes data and patches DOM.
 
-import { RECORDING, UPLOADING, blinkGlyph, elapsedLabel, isBusy } from "./state.js";
+import {
+  PAUSED,
+  PLAYING,
+  RECORDING,
+  blinkGlyph,
+  elapsedLabel,
+  isBusy,
+} from "./state.js";
 
 export function elements() {
   return {
@@ -23,6 +30,8 @@ export function elements() {
     recordButton: document.getElementById("btn-record"),
     redoButton: document.getElementById("btn-redo"),
     playButton: document.getElementById("btn-play"),
+    stopButton: document.getElementById("btn-stop"),
+    nextTakeButton: document.getElementById("btn-next-take"),
     prevButton: document.getElementById("btn-prev"),
     nextButton: document.getElementById("btn-next"),
   };
@@ -146,18 +155,40 @@ function drawControls(dom, view) {
   const busy = isBusy(view.state);
   const hasScript = view.chunks.length > 0;
   const onRecorded = hasScript && view.recorded.has(view.cursor);
+  const playing = view.playback === PLAYING;
+  const paused = view.playback === PAUSED;
 
-  dom.recordButton.textContent = recording ? "Stop" : "Record";
+  // Record only ever starts a take and Stop only ever ends one, so the key
+  // under the thumb keeps its meaning between presses. Play/pause is the one
+  // deliberate exception: a deck pairs those on a single key.
   dom.recordButton.classList.toggle("is-recording", recording);
-  // Disabled while a take uploads, so a second tap cannot start capturing over
-  // one still in flight; the controller refuses it too, but a live-looking
-  // button that does nothing reads as a dropped tap.
-  dom.recordButton.disabled = !hasScript || view.state === UPLOADING;
+  dom.recordButton.disabled = !hasScript || busy;
 
-  // Redo and play act on the take under the cursor, so they are meaningless
-  // both mid-take and on a line with no audio yet.
+  // One key plays, pauses and resumes, so its face has to say which of those
+  // the next press does. Pausing shows play again because that is what resumes.
+  const playPauseLabel = playing ? "Pause" : paused ? "Resume" : "Play";
+  // Written on the button rather than a child span: the glyph is the button's
+  // only content, and addressing it through the element already bound here
+  // keeps every lookup in elements() where the view's DOM contract lives.
+  dom.playButton.textContent = playing ? "⏸" : "▶";
+  dom.playButton.setAttribute("aria-label", playPauseLabel);
+  dom.playButton.classList.toggle("is-playing", playing);
+  // Enabled while paused even though the cursor may sit on an unrecorded line:
+  // the clip is still loaded, and this key is what resumes it.
+  dom.playButton.disabled = busy || (!onRecorded && !paused);
+  // Stop ends whichever transport is running - a take being captured, or a
+  // clip being played - and is dead only when neither is.
+  dom.stopButton.disabled = !recording && !playing && !paused;
+
+  // The one control that spans two lines: it saves this take and immediately
+  // arms the next, so it means nothing unless a take is actually running and
+  // there is a line left to move to.
+  dom.nextTakeButton.disabled =
+    !recording || !hasScript || view.cursor >= view.chunks.length - 1;
+
+  // Redo acts on the take under the cursor, so it is meaningless both mid-take
+  // and on a line with no audio yet.
   dom.redoButton.disabled = busy || !onRecorded;
-  dom.playButton.disabled = busy || !onRecorded;
   dom.prevButton.disabled = busy || !hasScript || view.cursor === 0;
   dom.nextButton.disabled =
     busy || !hasScript || view.cursor >= view.chunks.length - 1;
