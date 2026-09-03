@@ -48,14 +48,55 @@ class PipelineError(RuntimeError):
     """Raised with an actionable message when a pipeline precondition fails."""
 
 
+def dataset_audio_path(audio_path):
+    """How a clip is named in dataset.csv: its filename, nothing more.
+
+    An absolute path pins the dataset to the machine that recorded it. The
+    container writes /data/audio/es_00000.wav, and the documented workflow
+    rsyncs the clips and the CSV to the laptop, where that directory does not
+    exist: train.py could not load a single row, and record_data.py's startup
+    prune deleted every one of them as a clip gone missing.
+
+    The filename is enough because every clip lives directly in one audio
+    directory - recorder_state.clip_path is the only thing that names one - and
+    that directory is already a configured value on both front ends.
+    """
+    return Path(audio_path).name
+
+
+def resolve_audio_path(audio_path, audio_dir):
+    """The clip a dataset row refers to, on this machine.
+
+    An absolute path is honoured as written so datasets recorded before
+    filenames were stored keep loading; anything else resolves against the
+    audio directory this run was told to use.
+    """
+    stored = Path(audio_path)
+    return stored if stored.is_absolute() else Path(audio_dir) / stored
+
+
+# A break in range of the maximum is preferred over cutting mid-clause, but one
+# in the first few words would leave a stub line, so only the tail is searched.
+NATURAL_BREAKS = ",;:—–"
+MIN_WORDS_BEFORE_BREAK = 8
+
+
 def split_sentences(text):
-    """Split prose into sentences, honouring Spanish inverted punctuation."""
-    normalized = re.sub(r"\s+", " ", text).strip()
-    if not normalized:
-        return []
-    # Split after .!?… only when followed by whitespace, so decimals stay intact.
-    parts = re.split(r"(?<=[.!?…])\s+(?=[¿¡\"'(\[]?[^\s])", normalized)
-    return [part.strip() for part in parts if part.strip()]
+    """Split prose into sentences, honouring Spanish inverted punctuation.
+
+    A blank line ends a sentence even without terminal punctuation: collapsing
+    every whitespace run merged a heading ending in ':' into the paragraph
+    below it, which was then cut mid-clause to fit the maximum.
+    """
+    sentences = []
+    for paragraph in re.split(r"\n\s*\n", text):
+        normalized = re.sub(r"\s+", " ", paragraph).strip()
+        if not normalized:
+            continue
+        # Split after .!?… only when followed by whitespace, so decimals stay intact.
+        parts = re.split(r"(?<=[.!?…])\s+(?=[¿¡\"'(\[]?[^\s])", normalized)
+        sentences.extend(part.strip() for part in parts if part.strip())
+    return sentences
 
 
 def chunk_text(text):
@@ -91,11 +132,28 @@ def _flush(words):
 
 
 def _hard_split(words):
-    """Break an over-long sentence at word boundaries into readable pieces."""
-    return [
-        " ".join(words[start:start + MAX_WORDS_PER_CHUNK])
-        for start in range(0, len(words), MAX_WORDS_PER_CHUNK)
-    ]
+    """Break an over-long sentence, preferring a natural pause to a blind cut.
+
+    Reading aloud from a line that ends mid-clause is awkward, so a comma or
+    similar within the allowed span wins over the maximum-length boundary.
+    """
+    pieces = []
+    remaining = list(words)
+    while len(remaining) > MAX_WORDS_PER_CHUNK:
+        cut = _break_point(remaining)
+        pieces.append(" ".join(remaining[:cut]))
+        remaining = remaining[cut:]
+    if remaining:
+        pieces.append(" ".join(remaining))
+    return pieces
+
+
+def _break_point(words):
+    """Index to cut at: the last natural pause in range, else the maximum."""
+    for index in range(MAX_WORDS_PER_CHUNK, MIN_WORDS_BEFORE_BREAK - 1, -1):
+        if words[index - 1].endswith(tuple(NATURAL_BREAKS)):
+            return index
+    return MAX_WORDS_PER_CHUNK
 
 
 def count_recorded_chunks(csv_path, language):
@@ -108,32 +166,6 @@ def count_recorded_chunks(csv_path, language):
 
     with path.open(newline="", encoding="utf8") as handle:
         return sum(1 for row in csv.DictReader(handle) if row["language"] == language)
-
-
-def next_chunk_index(csv_path, language):
-    """Return the chunk index a resumed session should start from.
-
-    Derived from the recorded filenames rather than the row count, because a
-    skipped chunk leaves a gap: counting rows would restart before an index that
-    is already on disk and append a duplicate row for it.
-    """
-    import csv
-    import re
-
-    path = Path(csv_path)
-    if not path.exists():
-        return 0
-
-    highest = -1
-    with path.open(newline="", encoding="utf8") as handle:
-        for row in csv.DictReader(handle):
-            if row["language"] != language:
-                continue
-            match = re.search(rf"{language}_(\d+)\.wav$", row["audio_path"])
-            if match:
-                highest = max(highest, int(match.group(1)))
-
-    return highest + 1
 
 
 def load_audio(path):

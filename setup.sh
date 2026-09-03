@@ -35,7 +35,18 @@ python -m pip install --quiet \
   "sounddevice>=0.4,<1" \
   "ctranslate2>=4.8,<5" \
   "faster-whisper>=1.2,<2" \
-  "pytest>=8,<9"
+  "pytest>=8,<10" \
+  "ruff>=0.14,<1"
+
+# Commit hooks run lint and the fast test tiers; lefthook is the only
+# non-pip dependency, so a missing binary is reported rather than installed.
+if command -v lefthook >/dev/null 2>&1; then
+  lefthook install >/dev/null && echo "Git hooks installed via lefthook."
+else
+  echo "WARNING: lefthook not found - commit hooks are not active."
+  echo "  Install it with 'brew install lefthook' (macOS) or see https://lefthook.dev,"
+  echo "  then run 'lefthook install'."
+fi
 
 # Cloned only for whisper/assets/mel_filters.npz, which the ggml converter reads.
 if [ ! -d "./whisper" ]; then

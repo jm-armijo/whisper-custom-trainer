@@ -1,0 +1,565 @@
+/* Dark-first recorder skin.
+ *
+ * The status colours are the terminal palette from recorder_theme.json,
+ * resolved to the xterm ANSI values so a line reads the same green/yellow on
+ * the phone as it does in curses. Only this file turns a status name into a
+ * colour - state.js never emits one. */
+
+:root {
+  color-scheme: dark;
+
+  --ansi-green: #26a269;
+  --ansi-green-bright: #33d17a;
+  --ansi-yellow: #e5a50a;
+  --ansi-red: #e01b24;
+  --ansi-blue: #62a0ea;
+  --ansi-white: #d0cfcc;
+
+  --bg: #14161a;
+  --bg-raised: #1c1f25;
+  --bg-sunken: #101216;
+  --border: #2b3039;
+  --text: var(--ansi-white);
+  --text-dim: #8b8f97;
+
+  /* recorder_theme.json, style by style. */
+  --recorded: var(--ansi-green);
+  --selected: var(--ansi-yellow);
+  --recorded-selected: var(--ansi-green-bright);
+  --pending: var(--ansi-white);
+  --record-dot: var(--ansi-red);
+  --title-fg: var(--ansi-blue);
+  --message-fg: var(--ansi-yellow);
+  --status-idle-bg: var(--ansi-white);
+  --status-idle-fg: #101216;
+  --status-recording-bg: var(--ansi-red);
+  --status-recording-fg: #14161a;
+
+  /* The transport keys, coloured the way a deck's are. Only the glyph is
+   * tinted, not the cap: four saturated slabs in a row would shout over the
+   * script, which is the thing on this page that has to be read.
+   *
+   * Record is red on every deck ever built, and it is the one key that
+   * destroys what is already on the tape - the same reason the curses view
+   * paints its dot --ansi-red. It is red *at rest*, not only once a take is
+   * running: the warning is needed before the press, not after it.
+   * Recording then lights the whole cap rather than changing hue, so "armed"
+   * and "running" stay distinguishable without spending a second colour. */
+  --transport-record: var(--ansi-red);
+  --transport-record-live-bg: var(--ansi-red);
+  --transport-record-live-fg: #fff;
+  /* Green for play, the deck convention and the same green a finished line
+   * already uses here - on this page green consistently means "audio you
+   * have". */
+  --transport-play: var(--ansi-green-bright);
+  /* Stop is deliberately uncoloured: it ends whatever is running, so it
+   * belongs to neither the playback nor the record side, and a neutral key
+   * between them is what makes the red and the green read as decisions. */
+  --transport-stop: var(--text);
+  /* Stop-and-record-next is half of each key it combines, so it takes the
+   * colour of the half that matters - it is the one that arms the microphone
+   * again - held a step back in yellow-amber rather than a second red, which
+   * would leave two keys claiming to be Record. Amber is already this page's
+   * "next line to read" colour, which is exactly what this key selects. */
+  --transport-next-take: var(--ansi-yellow);
+
+  /* The waveform strip. render.js reads these off the canvas rather than
+   * holding hex values of its own, so the palette stays one table. */
+  --waveform-axis: var(--border);
+  --waveform-live: var(--ansi-red);
+  --waveform-level: var(--ansi-green-bright);
+  --waveform-peaks: var(--ansi-blue);
+  --waveform-played: var(--ansi-green-bright);
+  --waveform-playhead: var(--ansi-yellow);
+
+  --tap-target: 46px;
+  --font-ui: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-read: Georgia, "Iowan Old Style", "Noto Serif", serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-ui);
+  /* Fill the viewport exactly so only the chunk list scrolls; on Android the
+   * dynamic toolbar makes 100vh overshoot, hence dvh. */
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  -webkit-text-size-adjust: 100%;
+}
+
+/* ---------- title bar ---------- */
+
+.titlebar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  padding-top: max(0.5rem, env(safe-area-inset-top));
+  background: var(--bg-sunken);
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+
+.title {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--title-fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.menu-toggle {
+  min-width: var(--tap-target);
+  min-height: var(--tap-target);
+  font-size: 1.25rem;
+  line-height: 1;
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+/* ---------- layout ---------- */
+
+.layout {
+  flex: 1 1 auto;
+  display: flex;
+  min-height: 0;
+  position: relative;
+}
+
+.sidebar {
+  background: var(--bg-sunken);
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+  flex: 0 0 240px;
+  padding: 0.75rem;
+}
+
+/* Desktop: the menu is open by default and the toggle collapses it away.
+ * Phones invert this below - there the class is what opens the overlay. */
+.sidebar.is-collapsed {
+  display: none;
+}
+
+.sidebar-heading {
+  margin: 0 0 0.5rem;
+  font-size: 0.7rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.script-menu {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.script {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  width: 100%;
+  min-height: var(--tap-target);
+  padding: 0.5rem 0.6rem;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.script:hover {
+  background: var(--bg-raised);
+}
+
+.script.is-active {
+  background: var(--bg-raised);
+  border-color: var(--title-fg);
+}
+
+.script.is-complete .script-progress {
+  color: var(--recorded);
+}
+
+.script-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.script-progress {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.8rem;
+  color: var(--text-dim);
+}
+
+/* ---------- chunk list ---------- */
+
+.main {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  display: flex;
+}
+
+.chunk-list {
+  list-style: none;
+  margin: 0;
+  padding: 0.5rem 0.5rem 40vh;
+  overflow-y: auto;
+  flex: 1 1 auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.chunk {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.55rem 0.5rem;
+  border-radius: 8px;
+  border-left: 3px solid transparent;
+  cursor: pointer;
+  scroll-margin: 25vh;
+}
+
+.chunk-gutter {
+  flex: 0 0 auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8rem;
+  white-space: pre;
+  color: var(--text-dim);
+  padding-top: 0.15rem;
+}
+
+.chunk-text {
+  font-family: var(--font-read);
+  font-size: 1.05rem;
+  line-height: 1.5;
+}
+
+/* The four statuses of recorder_state.chunk_statuses. "recorded_selected" is
+ * deliberately distinct from "selected": a finished line under the cursor must
+ * not still say "read this next". */
+.chunk--pending {
+  color: var(--pending);
+}
+
+.chunk--recorded {
+  color: var(--recorded);
+}
+
+.chunk--selected {
+  color: var(--selected);
+  font-weight: 700;
+  background: var(--bg-raised);
+  border-left-color: var(--selected);
+}
+
+.chunk--recorded_selected {
+  color: var(--recorded-selected);
+  font-weight: 700;
+  background: var(--bg-raised);
+  border-left-color: var(--recorded-selected);
+}
+
+/* ---------- footer: message, status bar, controls ---------- */
+
+.footer {
+  flex: 0 0 auto;
+  background: var(--bg-sunken);
+  border-top: 1px solid var(--border);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+/* A fixed strip rather than one that appears and reflows the page: the canvas
+ * is hidden between takes, and a footer that changed height mid-tap would move
+ * the record button out from under the thumb already on its way down. */
+.waveform {
+  display: block;
+  width: 100%;
+  height: 56px;
+  background: var(--bg-sunken);
+  border-top: 1px solid var(--border);
+}
+
+.message {
+  margin: 0;
+  padding: 0 0.75rem;
+  min-height: 1.4rem;
+  font-size: 0.8rem;
+  color: var(--message-fg);
+}
+
+.status-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.35rem 0.75rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  background: var(--status-idle-bg);
+  color: var(--status-idle-fg);
+}
+
+.status-bar.is-recording {
+  background: var(--status-recording-bg);
+  color: var(--status-recording-fg);
+}
+
+/* No CSS animation: the glyph is swapped by the controller's blink timer, the
+ * same mechanism the curses view uses, so the dot and the clock stay in step. */
+.record-dot {
+  font-size: 0.9rem;
+  line-height: 1;
+}
+
+.record-timer {
+  font-variant-numeric: tabular-nums;
+}
+
+.status-legend {
+  margin-left: auto;
+  font-weight: 400;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.controls {
+  display: grid;
+  gap: 0.4rem;
+  padding: 0.6rem 0.75rem;
+}
+
+/* The transport bar, laid out like the key deck on a cassette recorder: a
+ * close-packed run of identical slabs, seated in a recessed well, with a gap
+ * before Record so it reads as the one key set apart - which is how the
+ * hardware separated the key that overwrites the tape.
+ *
+ * Grid rather than flex so every key is exactly the same width whatever glyph
+ * it carries: on a deck they are moulded from one piece, and a Record key
+ * wider than Stop because ⏺ measures wider than ⏹ would look like a mistake. */
+.controls--transport {
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0.15rem;
+  padding: 0.5rem 0.75rem 0;
+}
+
+.control {
+  min-height: var(--tap-target);
+  padding: 0.5rem 0.25rem;
+  background: var(--bg-raised);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.control:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+/* The glyphs carry the meaning, so they are set large enough to read at a
+ * glance from reading distance - the button's accessible name lives in its
+ * aria-label, not in this text.
+ *
+ * Squared off and lightly bevelled: a deck's keys are flat-topped rectangles
+ * in a row, not the rounded pills the rest of the page uses, and the taller
+ * slab is what makes the bar read as a transport rather than a toolbar. */
+.control--transport {
+  font-size: 2.7rem;
+  line-height: 1;
+  min-height: 4.4rem;
+  padding: 0.4rem 0.15rem;
+  border-radius: 3px;
+  border-top-color: color-mix(in srgb, var(--border) 40%, #fff);
+  box-shadow: inset 0 -2px 0 rgb(0 0 0 / 0.35);
+}
+
+/* A key spends most of its life disabled - drawControls dims three of the four
+ * between takes - and 0.35 is where a saturated glyph on a near-black ground
+ * stops being a shape you can name. The row therefore fades less than the rest
+ * of the page's controls: still plainly dead, still readable. */
+.control--transport:disabled {
+  opacity: 0.55;
+}
+
+/* Pressed, not merely highlighted: the key travels down into the well. */
+.control--transport:active:not(:disabled) {
+  transform: translateY(1px);
+  box-shadow: inset 0 -1px 0 rgb(0 0 0 / 0.35);
+}
+
+/* The colour is on the glyph, not the cap: the keys stay one moulding, and
+ * what the eye picks out is the symbol, the way a deck's are printed. */
+.control--play {
+  color: var(--transport-play);
+}
+
+.control--stop {
+  color: var(--transport-stop);
+}
+
+/* Two glyphs share this key, so it must not outgrow the single-glyph ones: at
+ * the row's size the pair overflows a slab sized for one character. The ratio
+ * is the same one it had before the glyphs doubled. */
+.control--next-take {
+  font-size: 2.2rem;
+  letter-spacing: -0.1em;
+  color: var(--transport-next-take);
+}
+
+/* Record is the key set apart, the way the hardware separated the one control
+ * that overwrites the tape: its own colour, and a gap before it so the three
+ * playback keys read as a group rather than as four identical slabs. */
+.control--record {
+  margin-left: 0.5rem;
+  color: var(--transport-record);
+}
+
+/* Lit rather than recoloured. Both states are red - red is what the key means -
+ * so a running take fills the cap instead, which is visible at the edge of
+ * vision while the eyes are on the script. */
+.control--record.is-recording {
+  background: var(--transport-record-live-bg);
+  border-color: var(--transport-record-live-bg);
+  color: var(--transport-record-live-fg);
+}
+
+/* ---------- phone ---------- */
+
+@media (max-width: 40rem) {
+  /* The menu overlays rather than squeezing the reading column, which is the
+   * only thing worth the width on a phone. */
+  .sidebar {
+    position: absolute;
+    inset: 0 auto 0 0;
+    z-index: 10;
+    width: min(80vw, 300px);
+    flex-basis: auto;
+    transform: translateX(-100%);
+    transition: transform 0.18s ease-out;
+  }
+
+  .sidebar.is-open {
+    transform: translateX(0);
+    box-shadow: 0 0 0 100vmax rgb(0 0 0 / 50%);
+  }
+
+  /* On a phone the drawer starts closed, so the desktop collapse class must
+   * not also hide it - is-open alone decides. */
+  .sidebar.is-collapsed {
+    display: block;
+  }
+
+  .chunk-text {
+    font-size: 1.15rem;
+  }
+
+  /* The transport keeps its four-across row on a phone: they are the buttons
+   * used mid-take, and reflowing them would move the key under the thumb. */
+  .control--transport {
+    font-size: 2.9rem;
+  }
+
+  .control--next-take {
+    font-size: 2.35rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar {
+    transition: none;
+  }
+}
+
+/* ---------- the re-record confirmation ---------- */
+
+/* Built by render.js and positioned from JS, because it has to land beside the
+ * line it is asking about - a native confirm() docked itself to the top of the
+ * viewport, a screen away from the thumb that pressed Record.
+ *
+ * Fixed rather than absolute: the chunk list scrolls underneath, and top/left
+ * are written in viewport coordinates by state.clampToViewport. */
+.confirm {
+  position: fixed;
+  z-index: 20;
+  max-width: min(20rem, calc(100vw - 1rem));
+  padding: 0.75rem;
+  background: var(--bg-raised);
+  /* The colour of the thing being warned about: this dialog only ever appears
+   * because a saved take is about to be deleted. */
+  border: 1px solid var(--record-dot);
+  border-radius: 0.5rem;
+  box-shadow: 0 0.5rem 1.5rem rgb(0 0 0 / 60%);
+  font-family: var(--font-ui);
+  color: var(--text);
+}
+
+.confirm-question {
+  margin: 0 0 0.75rem;
+  font-size: 0.95rem;
+  line-height: 1.35;
+}
+
+.confirm-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+/* Both keys are full tap targets: this is answered on a phone, one-handed,
+ * and a 24px button beside a destructive one is a mis-tap waiting to happen. */
+.confirm-button {
+  flex: 1;
+  min-height: var(--tap-target);
+  padding: 0 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+  background: var(--bg-sunken);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 1rem;
+  cursor: pointer;
+}
+
+.confirm-button:focus-visible {
+  outline: 2px solid var(--title-fg);
+  outline-offset: 2px;
+}
+
+/* The destructive key wears the record colour, so the one that throws a take
+ * away is the one that does not look like the safe default. */
+.confirm-button--confirm {
+  background: var(--record-dot);
+  border-color: var(--record-dot);
+  color: #fff;
+}

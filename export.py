@@ -8,6 +8,7 @@ import argparse
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 import whisper_pipeline as wp
 
@@ -41,7 +42,7 @@ def export_ctranslate2():
         shutil.rmtree(destination)
 
     run([
-        "ct2-transformers-converter",
+        converter_command(),
         "--model", str(wp.MERGED_MODEL_DIR),
         "--output_dir", str(destination),
         "--quantization", "float16",
@@ -74,6 +75,26 @@ def export_ggml():
     destination = wp.EXPORTS_DIR / GGML_BINARY_NAME
     produced.replace(destination)
     return destination
+
+
+def converter_command():
+    """Locate ct2-transformers-converter, preferring this interpreter's venv.
+
+    It is a console script installed beside the running python, so resolving it
+    that way means export.py works when invoked as venv/bin/python without the
+    venv activated. Bare-name lookup fails there with a raw FileNotFoundError.
+    """
+    name = "ct2-transformers-converter"
+    local = Path(sys.executable).parent / name
+    if local.exists():
+        return str(local)
+
+    found = shutil.which(name)
+    if found is None:
+        raise wp.PipelineError(
+            f"{name} not found. Run setup.sh, or activate the venv."
+        )
+    return found
 
 
 def run(command):

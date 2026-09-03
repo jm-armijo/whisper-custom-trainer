@@ -1,0 +1,36 @@
+[tool.ruff]
+# Vendored clones and the venv are third-party; setup.sh regenerates them.
+exclude = ["venv", "whisper", "whisper.cpp"]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "SIM", "UP", "PL", "RUF"]
+ignore = [
+    # Heavy imports (torch, transformers) stay inside functions deliberately so
+    # the recorder and the test suite start without loading the ML stack.
+    "PLC0415",
+    # Trainer, converter and view-builder calls legitimately take many arguments.
+    "PLR0913",
+    "PLR0917",
+    # `match=` patterns in tests read as prose; escaping them hurts legibility
+    # more than an unanchored metacharacter costs.
+    "RUF043",
+    # Spanish text and NATURAL_BREAKS carry real non-ASCII punctuation
+    # (en dash, accents); flagging them as "ambiguous" is wrong for this project.
+    "RUF001",
+    "RUF002",
+    "RUF003",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# _write_rows must hold the temp file open across the fsync/os.replace pair that
+# makes the write atomic; a context manager would close it before the rename.
+"recorder_state.py" = ["SIM115"]
+# run() inspects returncode itself to raise PipelineError with the failing command.
+"export.py" = ["PLW1510"]
+# The converter tests assert on returncode and stderr, so check=True would abort
+# the test before it can make its assertion.
+"tests/integration/test_converter_requirements.py" = ["PLW1510"]
+# Tests name magic numbers inline; that is the point of a fixture-free assertion.
+"tests/**" = ["PLR2004"]

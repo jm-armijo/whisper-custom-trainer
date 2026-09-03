@@ -1,0 +1,52 @@
+# The build context is sent to the daemon before the first layer runs, so
+# excluding the heavy regenerable directories is what keeps a build on a
+# Raspberry Pi's SD card from taking minutes to start.
+
+# Regenerable by setup.sh, and macOS-native besides - the venv's binaries would
+# not run in a linux container even if they were copied.
+venv/
+whisper/
+whisper.cpp/
+
+# Model artifacts: gigabytes, and the container never loads a model.
+custom-lora-adapter/
+merged-whisper-model/
+exports/
+
+# Recorded audio and the dataset arrive through the bind mounts at runtime.
+# Baking them into the image would ship personal recordings in every layer and
+# then be shadowed by the mount anyway.
+data/
+dataset.csv
+scripts/
+
+.git/
+.gitignore
+.pytest_cache/
+.ruff_cache/
+__pycache__/
+*.pyc
+
+# The training and export stack is not installed in the image, so these modules
+# could not import even if something invoked them.
+train.py
+merge.py
+export.py
+convert.sh
+setup.sh
+
+# The curses recorder is the laptop's interface; the container serves the
+# browser one and has no terminal to draw on.
+record_data.py
+recorder_ui.py
+recorder_theme.py
+recorder_theme.json
+
+tests/
+README.md
+CLAUDE.md
+Dockerfile
+docker-compose.yml
+lefthook.yml
+pyproject.toml
+pytest.ini

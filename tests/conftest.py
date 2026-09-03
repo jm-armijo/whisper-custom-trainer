@@ -67,3 +67,37 @@ def monkeypatch_module():
     patcher = MonkeyPatch()
     yield patcher
     patcher.undo()
+
+
+LINE = "this is a deliberately long sentence with plenty of words in it number {n}."
+
+
+def script_of(sentences):
+    return "\n\n".join(LINE.format(n=n) for n in range(sentences))
+
+
+@pytest.fixture
+def paths(tmp_path):
+    """The three directories the server is configured with.
+
+    Shared: the unit tier asserts the save/delete rules against it and the
+    integration tier decodes a real WebM take through the same layout.
+    """
+    import recorder_server as srv
+
+    scripts = tmp_path / "scripts"
+    # One directory per language: the path states the language, so nothing is
+    # inferred from a filename.
+    (scripts / "es").mkdir(parents=True)
+    (scripts / "en").mkdir(parents=True)
+    (scripts / "es" / "a.txt").write_text(script_of(4), encoding="utf8")
+    (scripts / "en" / "a.txt").write_text(script_of(3), encoding="utf8")
+
+    audio = tmp_path / "data"
+    audio.mkdir()
+    return srv.Config(
+        scripts_dir=scripts,
+        csv_path=tmp_path / "dataset.csv",
+        audio_dir=audio,
+        static_dir=tmp_path / "static",
+    )

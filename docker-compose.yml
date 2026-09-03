@@ -1,0 +1,68 @@
+# Runs the web recorder on the DietPi box so a phone on the LAN can record.
+#
+#   docker compose up -d --build
+#
+# Recording from a phone needs a secure context: browsers refuse getUserMedia
+# over plain HTTP to a LAN IP. See "Running on DietPi / Docker" in README.md.
+services:
+  recorder:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: my-whisper-recorder
+    container_name: my-whisper-recorder
+
+    # Published on all interfaces so the phone can reach the box by its LAN IP.
+    # The container-side bind is 0.0.0.0 (see the Dockerfile); binding to
+    # 127.0.0.1 there would leave this port answering nothing.
+    ports:
+      - "${RECORDER_PORT:-8099}:8099"
+
+    environment:
+      # Both sides of the port mapping must agree: the container-side number is
+      # what the server binds, so leaving this at the image default served
+      # nothing on the published port.
+      RECORDER_PORT: "8099"
+      # Serving TLS is what makes the phone's microphone available at all -
+      # browsers refuse getUserMedia over plain HTTP to a LAN IP. Unset, the
+      # Dockerfile's CMD omits --cert and the recorder falls back to HTTP,
+      # which is the localhost dev loop and not this deployment.
+      #
+      # Only the certificate is named: recorder_server.tls_context derives the
+      # key beside it as "<stem>-key<suffix>".
+      RECORDER_CERT: "/certs/localhost+2.pem"
+
+    # The dataset must outlive the container: `docker compose down` and a
+    # rebuilt image both destroy the writable layer, and every take recorded
+    # into it would go with them. Both paths live on the host.
+    volumes:
+      # Reading material, host-managed and never written by the server.
+      - ./training-text:/data/scripts:ro
+      # The wav files AND the dataset rows, as one directory.
+      #
+      # The CSV is deliberately NOT bind-mounted as a single file. A file bind
+      # mount makes its container-side path a *mountpoint*, and
+      # recorder_state._write_rows finishes every save with os.replace onto that
+      # path - a rename(2), which Linux refuses onto a mountpoint with EBUSY. So
+      # every take POSTed to the container failed while the image built and
+      # started perfectly happily. Mounting the directory leaves dataset.csv an
+      # ordinary file inside it, which rename can replace.
+      #
+      # It also puts dataset.csv.lock (see recorder_state.dataset_lock) on the
+      # host, where a terminal recorder writing the same dataset can see it;
+      # under a file mount the sidecar landed in the container's writable layer
+      # and the cross-process lock guarded nothing.
+      - ./data:/data/audio
+      # The mkcert pair, read-only: the server only loads it. Kept out of the
+      # image deliberately - a private key baked into a layer travels with
+      # every copy of it, and certs/ is gitignored for the same reason.
+      - ./certs:/certs:ro
+
+    # A crashed recorder should come back on its own after a reboot of the box,
+    # but a deliberate `compose stop` should stay stopped.
+    restart: unless-stopped
+
+    # The dataset rows the server writes reference host paths under ./data.
+    # Running as the invoking user keeps those files owned by that user rather
+    # than root, so training can read them back on the laptop after an rsync.
+    user: "${RECORDER_UID:-1000}:${RECORDER_GID:-1000}"

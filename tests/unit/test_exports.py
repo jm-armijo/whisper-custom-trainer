@@ -2,8 +2,8 @@
 
 import pytest
 
-import whisper_pipeline as wp
 import export
+import whisper_pipeline as wp
 
 
 @pytest.fixture
@@ -22,7 +22,7 @@ def merged_model(tmp_path, monkeypatch):
 @pytest.fixture
 def captured_commands(monkeypatch):
     commands = []
-    monkeypatch.setattr(export, "run", lambda command: commands.append(command))
+    monkeypatch.setattr(export, "run", commands.append)
     return commands
 
 
@@ -30,7 +30,7 @@ class TestCtranslate2Export:
     def test_invokes_the_ctranslate2_converter(self, merged_model, captured_commands):
         export.wp.EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
         export.export_ctranslate2()
-        assert captured_commands[0][0] == "ct2-transformers-converter"
+        assert captured_commands[0][0].endswith("ct2-transformers-converter")
 
     def test_copies_the_tokenizer_into_the_export(self, merged_model, captured_commands):
         """CTranslate2 builds its own vocabulary but consumers still want this."""
@@ -56,6 +56,35 @@ class TestCtranslate2Export:
         export.export_ctranslate2()
         command = captured_commands[0]
         assert command[command.index("--quantization") + 1] == "float16"
+
+
+class TestConverterLookup:
+    """The converter is a console script, so a bare name only resolves when the
+    venv is on PATH. Running venv/bin/python without activating gave a raw
+    FileNotFoundError from subprocess instead of an actionable message."""
+
+    def test_prefers_the_script_beside_the_running_interpreter(
+        self, tmp_path, monkeypatch
+    ):
+        binary = tmp_path / "ct2-transformers-converter"
+        binary.write_text("")
+        monkeypatch.setattr(export.sys, "executable", str(tmp_path / "python"))
+        monkeypatch.setattr(export.shutil, "which", lambda _: "/usr/bin/decoy")
+
+        assert export.converter_command() == str(binary)
+
+    def test_falls_back_to_path_lookup(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(export.sys, "executable", str(tmp_path / "python"))
+        monkeypatch.setattr(export.shutil, "which", lambda _: "/usr/bin/ct2")
+
+        assert export.converter_command() == "/usr/bin/ct2"
+
+    def test_missing_converter_raises_an_actionable_error(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(export.sys, "executable", str(tmp_path / "python"))
+        monkeypatch.setattr(export.shutil, "which", lambda _: None)
+
+        with pytest.raises(wp.PipelineError, match="setup.sh"):
+            export.converter_command()
 
 
 class TestGgmlExport:

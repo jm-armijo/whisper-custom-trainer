@@ -67,9 +67,11 @@ class TestGgmlRequirements:
 class TestCtranslate2Requirements:
     def test_conversion_succeeds_without_the_legacy_files(self, tmp_path_factory):
         """CT2 needs only what transformers 5.x already writes."""
-        import shutil
+        import export
 
-        if shutil.which("ct2-transformers-converter") is None:
+        try:
+            converter = export.converter_command()
+        except wp.PipelineError:
             pytest.skip("ctranslate2 not installed")
 
         from transformers import WhisperForConditionalGeneration
@@ -82,7 +84,7 @@ class TestCtranslate2Requirements:
 
         destination = tmp_path_factory.mktemp("ct2_out") / "model"
         result = subprocess.run(
-            ["ct2-transformers-converter", "--model", str(source),
+            [converter, "--model", str(source),
              "--output_dir", str(destination), "--quantization", "float16"],
             capture_output=True, text=True,
         )

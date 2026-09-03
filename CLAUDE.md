@@ -14,7 +14,7 @@ can load. Runs locally on Apple Silicon (MPS).
 ./setup.sh                                    # venv + deps + vendored repos (idempotent)
 source venv/bin/activate
 
-python record_data.py --text scripts/es.txt --lang es   # record; resumable
+python record_data.py --text training-text/es/spanish_phonetic_training.txt --lang es   # record; resumable
 python train.py                               # LoRA adapter -> ./custom-lora-adapter
 python merge.py                               # portable master -> ./merged-whisper-model
 python export.py --format all                 # ct2 | ggml | all -> ./exports
@@ -27,7 +27,7 @@ python export.py --format all                 # ct2 | ggml | all -> ./exports
 python -m pytest                              # unit only (~1s) - the default tier
 python -m pytest -m integration               # real libs/converters (~30s)
 python -m pytest -m e2e                       # full pipeline to speech (~20s)
-python -m pytest -m "unit or integration or e2e"        # all 132
+python -m pytest -m "unit or integration or e2e"        # every tier (~4min)
 
 python -m pytest tests/unit/test_chunking.py -q         # single file
 python -m pytest -k test_masks_padding -m "unit or integration"   # single test
@@ -36,6 +36,42 @@ python -m pytest -k test_masks_padding -m "unit or integration"   # single test
 `pytest.ini` sets `addopts = -m "not integration and not e2e"`, so a bare `pytest` runs
 only the fast tier. Tier markers are applied by path in `tests/conftest.py` — a test is
 tagged by which of `tests/{unit,integration,e2e}/` it lives in, not by a decorator.
+
+### Lint and commit hooks
+
+`ruff` is the linter; its configuration lives in `pyproject.toml`.
+
+```bash
+ruff check .                                  # what the commit hook runs
+ruff check . --fix                            # apply the safe fixes
+```
+
+Hooks are managed by `lefthook` (`lefthook.yml`), installed by `setup.sh`:
+
+- **pre-commit** — `ruff`, then the unit tier only (~4s). The integration and
+  e2e tiers ran here too and cost ~4-5min per commit, most of it the e2e tier
+  driving a pty in real time; that was paid on every commit, including ones
+  touching no Python, and usually re-ran a suite that had just been run by
+  hand.
+
+There is no pre-push hook, so **nothing automatically runs the slow tiers**.
+Run them yourself before pushing, and after any change to the recorder server,
+the curses UI, or the pipeline boundary:
+
+```bash
+python -m pytest -m "unit or integration or e2e"        # ~4min
+```
+
+`tests/e2e/test_pipeline.py` would download `whisper-small` and train an
+adapter, but it skips itself whenever the exports and vendored repos it needs
+are absent, so it costs a commit nothing until those artifacts exist.
+
+A few ruff rules are switched off per file rather than obeyed, because obeying
+them would break working code: `recorder_state.py` must hold its temp file open
+across the `fsync`/`os.replace` pair that makes the dataset write atomic
+(`SIM115`), and `export.run` inspects `returncode` itself to raise
+`PipelineError` naming the failed command (`PLW1510`). The reasons are recorded
+beside each ignore in `pyproject.toml`.
 
 ## Architecture
 
@@ -49,6 +85,82 @@ dataset.csv ──train.py──> custom-lora-adapter ──merge.py──> merg
                                               export.py ───────────┼──> exports/ct2  (faster-whisper, WhisperX)
                                                                    └──> exports/*.bin (whisper.cpp, OpenWhispr)
 ```
+
+### Chunking
+
+`chunk_text` splits on three things, in order of preference: sentence ends, blank
+lines, and — only when a single sentence exceeds the maximum — the last natural
+pause (`,;:` or a dash) within range, falling back to a plain word cut. Two
+details are load-bearing: a **blank line ends a sentence** even without terminal
+punctuation (collapsing all whitespace merged a heading ending in `:` into the
+paragraph below, which was then cut mid-clause), and `_break_point` ignores a
+pause in the first `MIN_WORDS_BEFORE_BREAK` words so a cut cannot leave a stub
+line. Whatever changes, every word must survive: `chunk_text` is lossless.
+
+### Recorder UI boundary
+
+The recorder is split so the screen can change without touching the dataset
+logic, mirroring how `whisper_pipeline.py` isolates third-party quirks:
+
+- `recorder_ui.py` — curses only. Draws a view dict and maps keys to actions;
+  knows nothing of audio, CSV or paths. Wrapping/scrolling are pure functions.
+- `recorder_state.py` — pure chunk bookkeeping. A chunk counts as recorded only
+  when its CSV row **and** its `.wav` both exist, so deleting a clip re-opens
+  that line and no sidecar state file is needed.
+  `chunk_statuses` returns four statuses, not three: a recorded line under the
+  cursor is `recorded_selected`, because folding it into `selected` left a line
+  yellow after its take was saved — the screen said "read this next" about work
+  already done.
+- `recorder_theme.py` + `recorder_theme.json` — colours and `blink_ms`, merged
+  over defaults and validated at startup.
+- `record_data.py` — the controller joining those to the microphone.
+
+Every dataset write goes through `recorder_state.dataset_lock`, an **flock on a
+sidecar `dataset.csv.lock`**. `upsert_row` and `prune_missing` are both
+read-modify-write over the whole file, and the writers are separate processes:
+the curses recorder and `recorder_server.py` can be recording into one dataset
+at once, so a `threading.Lock` would not see the other side. The lock is on a
+sidecar rather than the CSV because `_write_rows` replaces that inode on every
+write.
+
+flock only serialises processes **sharing a kernel**. That covers the DietPi
+deployment — the terminal recorder and the container are one Linux kernel, one
+inode — and it was measured to hold between two containers sharing the mount.
+It does **not** hold between a macOS host process and a container on Docker
+Desktop: the mount is `fakeowner` over VirtioFS with the container under a
+separate linuxkit VM kernel, so a containerised save completes inside a lock
+the host still holds. Locally on a Mac, run one front end at a time.
+
+### Portable dataset rows
+
+`audio_path` holds a **bare filename**, not an absolute path
+(`wp.dataset_audio_path` writes it, `wp.resolve_audio_path` reads it back
+against the audio dir this run was told to use). The container records into
+`/data/audio`, and the documented rsync moves those rows to a laptop where that
+directory does not exist: absolute paths made `train.py` unable to load a single
+row, and `record_data.py`'s startup `prune_missing` deleted every one of them as
+a clip gone missing. `resolve_audio_path` still honours an absolute path as
+written, so datasets recorded before this keep loading.
+
+The container writes `dataset.csv` **inside its one mounted directory**
+(`/data/audio/dataset.csv`), never as a bind mount of its own. A single-file
+bind mount makes the container-side path a mountpoint, and `_write_rows`
+finishes every save with `os.replace` onto it — a `rename(2)`, which Linux
+refuses onto a mountpoint with `EBUSY`. Mounted that way the image built,
+started and served the page while every take failed to save. The directory
+mount also puts `dataset.csv.lock` on the host, where a terminal recorder
+sharing the dataset can see it.
+
+Two constraints worth keeping: the record dot blinks by **redrawing on a timer**
+(`curses.A_BLINK` is ignored by most modern terminals), which is why the input
+loop is non-blocking; and `read_key` decodes **raw `ESC [ A` sequences** as well
+as `KEY_*` constants, because `keypad()` does not always fold them — arrows
+silently stopped working without this.
+
+Rendering is tested through a stub screen, never a real `initscr()`: pytest
+replaces `sys.stdout` while curses drives the terminal fd, which corrupts the
+run. The stub proves the UI calls curses as intended, not that curses paints
+correctly — verify real rendering by running the recorder.
 
 `whisper_pipeline.py` is the boundary layer: constants, paths, and every third-party
 workaround live there so a library upgrade is a one-function edit. Prefer extending it
@@ -76,6 +188,12 @@ This stack is transformers 5.x / datasets 5.x. Tutorials written for 4.x break h
 - **`ct2-transformers-converter --copy_files` may only name files that exist** in the
   model dir, or it aborts. transformers 5.x writes `processor_config.json`, *not*
   `preprocessor_config.json`.
+- **`ct2-transformers-converter` is a console script**, resolved via
+  `export.converter_command()` rather than a bare name. `shutil.which` only finds it
+  when the venv is on `PATH`, so `venv/bin/python export.py` without activating hit a
+  raw `FileNotFoundError` — and tests guarding on `which` skipped silently, hiding
+  real failures. Look it up beside `sys.executable` first.
+
 - `Seq2SeqTrainingArguments`: `use_mps_device` was removed (accelerate detects MPS on
   its own), and `evaluation_strategy` is now `eval_strategy` — relevant if an eval split
   is added, since `train.py` currently trains without one.
@@ -96,7 +214,9 @@ model at all; OpenWhispr covers them by typing into whatever app is focused.
 
 ## Conventions
 
-- Reading material for `record_data.py --text` goes in `scripts/` (gitignored, user-managed).
+- Reading material lives in `training-text/<language>/*.txt`, one directory per
+  language. The directory is the language label - nothing is inferred from a
+  filename, and a file outside a language directory is not listed at all.
 - `data/`, `dataset.csv`, and all model directories are gitignored — audio is personal,
   models are regenerable.
 - Tests mock only what is slow or external. Unit tests fake the processor; the integration

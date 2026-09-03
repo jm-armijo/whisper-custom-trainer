@@ -1,10 +1,17 @@
-"""Interactive recorder that turns a text script into a labelled audio dataset."""
+"""Interactive recorder that turns a text script into a labelled audio dataset.
+
+The screen lives in recorder_ui, the chunk bookkeeping in recorder_state; this
+module is the controller that joins them to the microphone and the dataset.
+"""
 
 import argparse
-import csv
 import sys
+import time
 from pathlib import Path
 
+import recorder_state as rs
+import recorder_theme as rt
+import recorder_ui as ui
 import whisper_pipeline as wp
 
 
@@ -14,16 +21,12 @@ def main():
     if not chunks:
         raise wp.PipelineError(f"No usable text found in {args.text}")
 
-    resume_index = wp.next_chunk_index(args.csv, args.lang)
-    if resume_index >= len(chunks):
-        print(f"All {len(chunks)} chunks for '{args.lang}' are already recorded.")
-        return
-
+    theme = rt.load_theme(args.theme)
     args.out_dir.mkdir(parents=True, exist_ok=True)
-    if resume_index:
-        print(f"Resuming at chunk {resume_index + 1} of {len(chunks)}.\n")
+    args.csv.parent.mkdir(parents=True, exist_ok=True)
 
-    record_session(chunks, resume_index, args)
+    ui.start(run, chunks, args, theme)
+    print(f"Dataset: {args.csv}")
 
 
 def parse_arguments():
@@ -33,6 +36,8 @@ def parse_arguments():
     parser.add_argument("--lang", required=True, choices=wp.SUPPORTED_LANGUAGES)
     parser.add_argument("--out-dir", type=Path, default=wp.AUDIO_DIR)
     parser.add_argument("--csv", type=Path, default=wp.DATASET_CSV)
+    parser.add_argument("--theme", type=Path, default=rt.DEFAULT_THEME_PATH,
+                        help="JSON colour and blink configuration")
     return parser.parse_args()
 
 
@@ -42,74 +47,154 @@ def read_script(path):
     return path.read_text(encoding="utf8")
 
 
-def record_session(chunks, start_index, args):
-    print_instructions()
-    for index in range(start_index, len(chunks)):
-        text = chunks[index]
-        print(f"\n[{index + 1}/{len(chunks)}] {text}")
-
-        clip = prompt_until_recorded(text)
-        if clip is None:
-            print("  skipped")
-            continue
-        if clip is QUIT:
-            print("\nStopped. Re-run the same command to resume here.")
-            return
-
-        destination = args.out_dir / f"{args.lang}_{index:05d}.wav"
-        write_clip(destination, clip)
-        append_row(args.csv, destination, text, args.lang)
-        print(f"  saved {destination.name} ({len(clip) / wp.SAMPLE_RATE:.1f}s)")
-
-    print(f"\nDone. Dataset: {args.csv}")
-
-
-def print_instructions():
-    print(
-        "\nControls: ENTER start/stop recording | r re-record | s skip | q quit\n"
-        "Read each line at your natural pace.\n" + "-" * 60
+def run(stdscr, chunks, args, theme):
+    """Event loop: draw, read a key, act, repeat until quit."""
+    view = ui.RecorderUI(stdscr, theme)
+    # A clip deleted between sessions leaves a row pointing at a missing file,
+    # which train.py cannot load; drop those before deriving what is recorded.
+    rs.prune_missing(args.csv, args.out_dir)
+    recorded = rs.recorded_indices(
+        args.csv, args.out_dir, args.lang, args.text, dict(enumerate(chunks))
     )
+    cursor = rs.first_unrecorded(len(chunks), recorded)
+    message = ""
 
-
-QUIT = object()
-
-
-def prompt_until_recorded(text):
-    """Record one chunk, honouring re-record requests until the take is kept."""
     while True:
-        command = input("  ENTER to record (r/s/q): ").strip().lower()
-        if command == "q":
-            return QUIT
-        if command == "s":
-            return None
+        view.draw(build_view(chunks, recorded, cursor, args, message, ui.IDLE))
+        action = view.read_key()
 
-        clip = record_clip()
-        if is_unusable(clip):
-            print(f"  discarded: {len(clip) / wp.SAMPLE_RATE:.2f}s is too short to use")
-            continue
+        if action == "quit":
+            return
+        if action in ("up", "down", "top", "bottom"):
+            cursor = move_cursor(cursor, action, len(chunks))
+            message = ""
+        elif action in ("record", "redo"):
+            recorded, message, quitting = handle_record(
+                view, chunks, recorded, cursor, args, theme
+            )
+            if quitting:
+                return
+        elif action == "play":
+            message = play_clip(args, cursor, recorded, chunks)
+        elif action == "skip":
+            cursor = move_cursor(cursor, "down", len(chunks))
+            message = ""
 
-        warn_if_unusual_length(clip)
 
-        decision = input("  ENTER to keep, 'r' to redo: ").strip().lower()
-        if decision != "r":
-            return clip
+def move_cursor(cursor, action, total):
+    """Clamp at both ends so the cursor never leaves the script."""
+    if action == "up":
+        return max(cursor - 1, 0)
+    if action == "down":
+        return min(cursor + 1, total - 1)
+    if action == "top":
+        return 0
+    return total - 1
 
 
-def record_clip():
-    """Capture microphone input between two ENTER presses."""
+def build_view(chunks, recorded, cursor, args, message, state, tick=0, elapsed=0):
+    return {
+        "title": f" {args.text.name if hasattr(args, 'text') else 'script'} · "
+                 f"{args.lang} · {len(recorded)}/{len(chunks)} recorded ",
+        "chunks": chunks,
+        "statuses": rs.chunk_statuses(len(chunks), recorded, cursor),
+        "recorded": recorded,
+        "cursor": cursor,
+        "state": state,
+        "tick": tick,
+        "elapsed": elapsed,
+        "message": message,
+    }
+
+
+def handle_record(view, chunks, recorded, cursor, args, theme):
+    """Record over the cursor line, confirming first if it already has audio."""
+    if cursor in recorded and not view.confirm(
+        f"Re-record line {cursor + 1}? (y/n)"
+    ):
+        return recorded, "kept the existing take", False
+
+    def redraw(tick, elapsed):
+        view.draw(build_view(
+            chunks, recorded, cursor, args, "", ui.RECORDING, tick, elapsed
+        ))
+
+    clip, stopped_by = capture_clip(view, redraw)
+
+    # Quitting mid-take abandons it: a clip cut short by 'q' is not a read the
+    # user intended to keep, and committing it would mislabel the dataset.
+    if stopped_by == "quit":
+        return recorded, "quit", True
+
+    if is_unusable(clip):
+        seconds = len(clip) / wp.SAMPLE_RATE
+        kept = " - previous take kept" if cursor in recorded else ""
+        return recorded, f"discarded: {seconds:.2f}s is too short to use{kept}", False
+
+    # Same rule as the web recorder: a re-record replaces the take already on
+    # this line, including one named before clips carried their script.
+    destination = rs.existing_clip_path(
+        args.csv, args.out_dir, args.lang, cursor, args.text, dict(enumerate(chunks))
+    )
+    write_clip(destination, clip)
+    rs.upsert_row(args.csv, destination, chunks[cursor], args.lang)
+
+    return recorded | {cursor}, saved_message(clip), False
+
+
+def saved_message(clip):
+    seconds = len(clip) / wp.SAMPLE_RATE
+    if seconds > wp.MAX_CLIP_SECONDS:
+        return f"saved {seconds:.1f}s - exceeds Whisper's 30s window, consider redo"
+    return f"saved {seconds:.1f}s"
+
+
+def capture_clip(view, on_tick):
+    """Capture until the stop key, returning (clip, stopping action).
+
+    The stopping key is returned rather than discarded so 'q' can both end the
+    take and quit the session; the sounddevice callback fills frames on its own
+    thread while curses polls, which is what keeps the dot blinking.
+    """
     import numpy as np
     import sounddevice as sd
 
     frames = []
+    started = time.monotonic()
+    tick = 0
+
+    stopped_by = "record"
     with sd.InputStream(
         samplerate=wp.SAMPLE_RATE, channels=1, dtype="float32",
         callback=lambda data, *_: frames.append(data.copy()),
     ):
-        input("  recording... ENTER to stop ")
+        on_tick(tick, 0)
+        while True:
+            action = view.read_key(timeout_ms=view.theme.blink_ms)
+            if action in ("record", "redo", "quit"):
+                stopped_by = action
+                break
+            tick += 1
+            on_tick(tick, time.monotonic() - started)
 
     if not frames:
-        return np.zeros(0, dtype="float32")
-    return np.concatenate(frames, axis=0).flatten()
+        return np.zeros(0, dtype="float32"), stopped_by
+    return np.concatenate(frames, axis=0).flatten(), stopped_by
+
+
+def play_clip(args, cursor, recorded, chunks):
+    """Play a take back so it can be checked without leaving the recorder."""
+    if cursor not in recorded:
+        return "nothing recorded on this line yet"
+
+    import sounddevice as sd
+
+    samples = wp.load_audio(rs.existing_clip_path(
+        args.csv, args.out_dir, args.lang, cursor, args.text, dict(enumerate(chunks))
+    ))
+    sd.play(samples, wp.SAMPLE_RATE)
+    sd.wait()
+    return f"played line {cursor + 1}"
 
 
 def is_unusable(clip):
@@ -117,29 +202,10 @@ def is_unusable(clip):
     return len(clip) / wp.SAMPLE_RATE < wp.MIN_CLIP_SECONDS
 
 
-def warn_if_unusual_length(clip):
-    seconds = len(clip) / wp.SAMPLE_RATE
-    if seconds < wp.MIN_CLIP_SECONDS:
-        print(f"  WARNING: only {seconds:.2f}s - likely cut off, consider 'r'")
-    elif seconds > wp.MAX_CLIP_SECONDS:
-        print(f"  WARNING: {seconds:.1f}s exceeds Whisper's 30s window, consider 'r'")
-
-
 def write_clip(destination, clip):
     import soundfile as sf
 
     sf.write(str(destination), clip, wp.SAMPLE_RATE, subtype="PCM_16")
-
-
-def append_row(csv_path, audio_path, text, language):
-    """Append and flush per row so an interrupted session keeps prior work."""
-    is_new_file = not csv_path.exists()
-    with csv_path.open("a", newline="", encoding="utf8") as handle:
-        writer = csv.writer(handle)
-        if is_new_file:
-            writer.writerow(wp.CSV_COLUMNS)
-        writer.writerow([str(audio_path), text, language])
-        handle.flush()
 
 
 if __name__ == "__main__":
