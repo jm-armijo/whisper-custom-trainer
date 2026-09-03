@@ -43,12 +43,12 @@ COPY static/ ./static/
 # within a mounted directory. Mounted as a file of its own, os.replace onto it
 # fails with EBUSY - see the volumes comment in docker-compose.yml.
 ENV RECORDER_HOST=0.0.0.0 \
-    RECORDER_PORT=8080 \
+    RECORDER_PORT=8099 \
     RECORDER_SCRIPTS_DIR=/data/scripts \
     RECORDER_OUT_DIR=/data/audio \
     RECORDER_CSV=/data/audio/dataset.csv
 
-EXPOSE 8080
+EXPOSE 8099
 
 # Unbuffered so `docker compose logs -f` shows requests as they arrive rather
 # than in 8KB bursts.

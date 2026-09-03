@@ -19,6 +19,11 @@ import pytest
 import recorder_state as rs
 import whisper_pipeline as wp
 
+# The one port the image, the compose mapping and the server must all agree on.
+# Named once here so a change to it fails as a mismatch rather than passing
+# against a number this file hardcoded separately.
+RECORDER_PORT = 8099
+
 pytestmark = pytest.mark.integration
 
 SERVER_MODULE = "recorder_server"
@@ -231,10 +236,20 @@ class TestNetworking:
         assert "0.0.0.0" in dockerfile
 
     def test_publishes_the_port(self, compose):
-        assert ":8080\"" in compose
+        assert f':{RECORDER_PORT}"' in compose
 
     def test_declares_the_port(self, dockerfile):
-        assert "EXPOSE 8080" in dockerfile
+        assert f"EXPOSE {RECORDER_PORT}" in dockerfile
+
+    def test_the_image_and_the_mapping_name_the_same_port(self, compose, dockerfile):
+        """The container-side half of the mapping is what the server binds.
+
+        Publishing 8099 while the image defaulted RECORDER_PORT to 8080 left the
+        published port answering nothing, and the compose file alone looked
+        correct - the disagreement only shows when both files are read together.
+        """
+        assert f"RECORDER_PORT={RECORDER_PORT}" in dockerfile
+        assert f'RECORDER_PORT: "{RECORDER_PORT}"' in compose
 
 
 class TestPersistence:
