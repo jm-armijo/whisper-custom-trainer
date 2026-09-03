@@ -23,6 +23,7 @@ import {
   ScriptSession,
   buildView,
   isBusy,
+  nextUnrecorded,
   savedMessage,
 } from "./state.js";
 
@@ -183,9 +184,17 @@ function selectChunk(index) {
  * the separate Redo button used to be. A deck has no redo key: the same key
  * records whatever line is selected, and the only thing a finished line needs
  * is the confirmation before its audio is thrown away.
+ *
+ * That confirmation is now awaited rather than read. window.confirm blocked
+ * the page while it asked; an in-page dialog does not, so between the question
+ * and its answer this key is still live under the thumb - hence `asking`,
+ * which is what stops a second tap starting a take behind the open dialog.
+ * The markup and the pixels belong to render.js; this only asks and waits.
  */
+let asking = false;
+
 async function record() {
-  if (isBusy(app.state) || !app.session) {
+  if (isBusy(app.state) || asking || !app.session) {
     return;
   }
   const index = app.session.cursor;
@@ -193,7 +202,19 @@ async function record() {
     await startRecording();
     return;
   }
-  if (!window.confirm(`Re-record line ${index + 1}?`)) {
+  asking = true;
+  let confirmed = false;
+  try {
+    confirmed = await render.confirmNearChunk(dom, {
+      index,
+      question: `Re-record line ${index + 1}? The saved take is deleted.`,
+      confirmLabel: "Re-record",
+      cancelLabel: "Keep",
+    });
+  } finally {
+    asking = false;
+  }
+  if (!confirmed) {
     say("kept the existing take");
     return;
   }
@@ -496,11 +517,16 @@ async function stopAndRecordNext() {
   if (!app.session.isRecorded(index)) {
     return;
   }
-  // No move() here: saveTake already stepped down. Moving again would skip the
-  // line this button exists to start recording.
-  if (index >= app.session.chunks.length - 1) {
+  // Asked from the line just saved, not from wherever saveTake's move("down")
+  // landed: that step is positional, so on a line whose successor already had
+  // a take this key armed it and recorded over the take. The rule searches
+  // forward for a gap instead, and answers null when there is none - then the
+  // stop stands on its own rather than capturing over finished work.
+  const next = nextUnrecorded(index, app.session.chunks.length, app.session.recorded);
+  if (next === null) {
     return;
   }
+  app.session.select(next);
   repaint({ scroll: true });
   await startRecording();
 }

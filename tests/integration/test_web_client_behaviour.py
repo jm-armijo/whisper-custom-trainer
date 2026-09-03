@@ -17,6 +17,7 @@ import json
 import shutil
 import subprocess
 import threading
+import types
 
 import numpy as np
 import pytest
@@ -65,13 +66,44 @@ function element(id) {
     // transport keys, so aria-label is the accessible name, and a test that
     // could not read it back could not tell a mislabelled key from a correct one.
     attributes: {},
+    // The confirmation is positioned from JS, so its top/left are the assert:
+    // a stub that dropped style writes could not tell a dialog pinned beside
+    // its line from one stuck at the origin.
+    style: {},
     setAttribute(name, value) { this.attributes[name] = value; },
-    appendChild(child) { this.children.push(child); },
-    append(...kids) { this.children.push(...kids); },
+    removeAttribute(name) { delete this.attributes[name]; },
+    appendChild(child) { child.parentNode = this; this.children.push(child); return child; },
+    append(...kids) { for (const kid of kids) this.appendChild(kid); },
     replaceChildren() { this.children = []; },
+    removeChild(child) { this.children = this.children.filter((kid) => kid !== child); },
+    remove() { this.parentNode?.removeChild(this); this.parentNode = null; },
     addEventListener(event, handler) { this.handlers[event] = handler; },
-    querySelector() { return null; },
-    getBoundingClientRect() { return { top: 0, bottom: 0, width: 300, height: 56 }; },
+    removeEventListener(event, handler) {
+      if (this.handlers[event] === handler) delete this.handlers[event];
+    },
+    // Focus is the accessibility contract: a dialog nothing focuses strands a
+    // keyboard user on the page behind it, so the stub records who took it.
+    focus() { globalThis.__focused = this; },
+    contains(other) {
+      return other === this || this.children.some((kid) => kid.contains?.(other));
+    },
+    // Only the "#id" form render.js actually uses; a full selector engine here
+    // would be a second implementation of the thing under test.
+    querySelector(selector) {
+      const wanted = selector.replace("#", "");
+      const walk = (node) => {
+        for (const kid of node.children) {
+          if (kid.id === wanted) return kid;
+          const found = walk(kid);
+          if (found) return found;
+        }
+        return null;
+      };
+      return walk(this);
+    },
+    getBoundingClientRect() {
+      return this.rect || { top: 0, left: 0, bottom: 56, right: 300, width: 300, height: 56 };
+    },
   };
   return node;
 }
@@ -98,7 +130,13 @@ function canvasElement(id) {
   return node;
 }
 
+// The re-record confirmation is appended to the body rather than looked up by
+// id, so the stub needs one: it is a transient node, and adding it to
+// index.html would put a permanently-present dialog in the markup contract.
+const body = element("body");
+
 globalThis.document = {
+  body,
   getElementById(id) {
     if (!nodes.has(id)) {
       nodes.set(id, id === "waveform" ? canvasElement(id) : element(id));
@@ -109,7 +147,16 @@ globalThis.document = {
   // line is now a tap on its row - Prev/Next are gone, because a web page can
   // just be clicked. A test moving the cursor needs the row's own handler, so
   // the created nodes stay reachable through the list they are appended to.
-  createElement: () => element("created"),
+  createElement: (tag) => {
+    const node = element("created");
+    node.tagName = String(tag).toUpperCase();
+    return node;
+  },
+  addEventListener(event, handler) { this.handlers[event] = handler; },
+  removeEventListener(event, handler) {
+    if (this.handlers[event] === handler) delete this.handlers[event];
+  },
+  handlers: {},
 };
 
 // Web Audio, counting every context opened against every one closed. A leaked
@@ -151,7 +198,10 @@ globalThis.AudioContext = class {
 const frames = { scheduled: 0, cancelled: 0, live: new Set() };
 globalThis.window = {
   matchMedia: () => ({ matches: false }),
-  confirm: () => true,
+  // A viewport with real numbers: the confirmation is clamped against these,
+  // and a zero-sized window would let a broken clamp look correct.
+  innerWidth: 400,
+  innerHeight: 800,
   AudioContext: globalThis.AudioContext,
   devicePixelRatio: 1,
   getComputedStyle: () => ({ getPropertyValue: () => "" }),
@@ -208,6 +258,30 @@ Object.defineProperty(globalThis, "navigator", {
 });
 
 globalThis.__nodes = nodes;
+globalThis.__body = body;
+// The one dialog on screen, or null. Found by role rather than by a class the
+// stylesheet owns: the class is a colour decision, the role is the contract.
+globalThis.__dialog = () =>
+  body.children.find((kid) => kid.attributes["role"] === "alertdialog") || null;
+// Its two keys, told apart by the action they carry rather than by their
+// order: a test that indexed into the children would pass on a dialog whose
+// buttons were swapped, which is the exact mistake worth catching.
+globalThis.__dialogButton = (action) => {
+  const found = [];
+  const walk = (node) => {
+    for (const kid of node.children) {
+      if (kid.dataset.action === action) found.push(kid);
+      walk(kid);
+    }
+  };
+  const dialog = globalThis.__dialog();
+  if (dialog) walk(dialog);
+  return found[0] || null;
+};
+globalThis.__press = (key) => {
+  const dialog = globalThis.__dialog();
+  dialog?.handlers.keydown?.({ key, preventDefault: () => {}, stopPropagation: () => {} });
+};
 globalThis.__record = record;
 globalThis.__tracks = tracks;
 globalThis.__audio = audio;
@@ -454,6 +528,52 @@ class TestTheStatusVocabularyMatchesThePythonDomain:
         assert index == rs.first_unrecorded(total, set(recorded))
 
 
+class TestTheNextUnrecordedRule:
+    """What the stop-and-record-next key arms.
+
+    Positional "cursor + 1" was the bug: it recorded over a line that already
+    had a take. The rule is a forward search for a gap, and it deliberately
+    does not wrap - this key is a read-record-read rhythm down the page, and
+    jumping backwards mid-flow would arm a line the reader is not looking at.
+    """
+
+    @staticmethod
+    def next_unrecorded(cursor, total, recorded):
+        return run_node(f"""
+        import {{ nextUnrecorded }} from "./state.js";
+        console.log(JSON.stringify(
+          nextUnrecorded({cursor}, {total}, new Set({recorded}))
+        ));
+        """)
+
+    def test_the_immediate_next_line_when_it_is_free(self):
+        assert self.next_unrecorded(0, 5, [0]) == 1
+
+    def test_it_skips_over_lines_that_already_have_takes(self):
+        """The reported bug: recording line 5 with 6 and 7 done must arm 8."""
+        assert self.next_unrecorded(5, 10, [5, 6, 7]) == 8
+
+    def test_it_is_null_when_every_later_line_is_recorded(self):
+        """Nothing left to arm is an answer, not a position: the caller stops
+        cleanly rather than clobbering a take."""
+        assert self.next_unrecorded(2, 5, [2, 3, 4]) is None
+
+    def test_it_is_null_on_the_last_line(self):
+        assert self.next_unrecorded(4, 5, [4]) is None
+
+    def test_it_never_looks_backwards(self):
+        """Line 0 is the only gap, and it is behind the cursor."""
+        assert self.next_unrecorded(3, 5, [1, 2, 3, 4]) is None
+
+    def test_an_unrecorded_line_under_the_cursor_is_not_the_answer(self):
+        """Strictly greater than the cursor: a failed take must not re-arm the
+        line the caller has just left."""
+        assert self.next_unrecorded(1, 4, []) == 2
+
+    def test_an_empty_script_has_nothing_ahead(self):
+        assert self.next_unrecorded(0, 0, []) is None
+
+
 def drive_app(body, origin, payload=None):
     """Boot the real app.js against a stubbed screen and a live server."""
     wav = blob_literal(payload if payload is not None else wav_bytes(1.0))
@@ -465,6 +585,21 @@ def drive_app(body, origin, payload=None):
         // Selecting a line is a tap on its row: Prev/Next are gone, because a
         // web page can be clicked directly.
         const line = (index) => __nodes.get("chunk-list").children[index];
+        // A record tap that is deliberately not awaited. On a finished line the
+        // handler now waits on an in-page confirmation, so awaiting it here
+        // would deadlock: the answer can only come from a test that has already
+        // returned. Awaiting the tap is still right everywhere the line is
+        // fresh, and those tests keep doing it.
+        const tapRecord = () => {{ button("btn-record").handlers.click(); }};
+        // The re-record in one call, for tests whose subject is something else
+        // entirely. window.confirm used to answer itself in the stub; the
+        // page's own dialog has to be pressed, so this is what replaces that.
+        const reRecord = async () => {{
+          tapRecord();
+          await __settle();
+          __dialogButton("confirm")?.handlers.click();
+          await __settle();
+        }};
         {body}
         """,
         origin,
@@ -868,9 +1003,11 @@ class TestTheLiveWaveformIsTornDown:
         is exactly the session a real recording is."""
         result = drive_app("""
         __tracks.push({ stop: () => {} });
+        // The script is four lines long, so from the fifth take on the cursor
+        // is clamped to a line that already has audio and every tap is a
+        // re-record. reRecord answers the dialog those raise.
         for (let take = 0; take < 10; take += 1) {
-          await button("btn-record").handlers.click();
-          await __settle();
+          await reRecord();
           await button("btn-stop").handlers.click();
           await __settle();
         }
@@ -1040,8 +1177,9 @@ class TestThePlaybackWaveform:
         result = drive_app(self.RECORD_ONE + """
         await button("btn-play").handlers.click();
         await __settle();
-        await button("btn-record").handlers.click();
-        await __settle();
+        // The cursor is back on the line just recorded, so this tap is a
+        // re-record and has to answer its confirmation first.
+        await reRecord();
         const hiddenDuringRecord = __nodes.get("waveform").hidden;
         await button("btn-stop").handlers.click();
         await __settle();
@@ -1185,8 +1323,8 @@ class TestTheTransportBehavesLikeACassetteDeck:
         result = drive_app(self.RECORD_ONE + """
         await button("btn-play").handlers.click();
         await __settle();
-        await button("btn-record").handlers.click();
-        await __settle();
+        // A re-record, because the cursor sits on the line just saved.
+        await reRecord();
         const state = button("status-state").textContent;
         const glyph = button("btn-play").textContent;
         // See test_record_never_stops_a_take: the take has to be closed out or
@@ -1251,11 +1389,100 @@ class TestTheTransportBehavesLikeACassetteDeck:
         assert result["state"] == "IDLE", "a failed save armed the next line anyway"
         assert "0/" in result["title"], result["title"]
 
+    # The script is four lines. Seeding a take on line 2 by recording it
+    # through the app rather than writing the CSV behind the server's back:
+    # the point of this tier is that the real save path is what marks a line
+    # recorded, and a hand-written row could be marked in a way the client
+    # never sees.
+    SEED_LINE_TWO = """
+    __tracks.push({ stop: () => {} });
+    const seed = async (index) => {
+      line(index).handlers.click();
+      await __settle();
+      await button("btn-record").handlers.click();
+      await __settle();
+      await button("btn-stop").handlers.click();
+      await __settle();
+    };
+    await seed(2);
+    """
+
+    def test_stop_and_record_next_skips_a_line_that_already_has_a_take(
+        self, live_server
+    ):
+        """The reported bug. Arming the next line *by position* recorded over
+        line 2's existing take; the key must find the next gap instead."""
+        result = drive_app(self.SEED_LINE_TWO + """
+        line(1).handlers.click();
+        await __settle();
+        await button("btn-record").handlers.click();
+        await __settle();
+        await button("btn-next-take").handlers.click();
+        await __settle();
+        const armed = {
+          state: button("status-state").textContent,
+          onTwo: "aria-current" in line(2).attributes,
+          onThree: line(3).attributes["aria-current"],
+        };
+        // See test_record_never_stops_a_take: the armed take holds an
+        // animation frame that would keep node alive past the script's end.
+        await button("btn-stop").handlers.click();
+        await __settle();
+        console.log(JSON.stringify(armed));
+        """, live_server)
+        assert result["state"] == "RECORDING", "the next free line was never armed"
+        assert result["onTwo"] is False, "it armed the line that already had a take"
+        assert result["onThree"] == "true", "line 3 was not the line armed"
+
+    def test_it_stops_cleanly_when_every_later_line_is_recorded(
+        self, live_server
+    ):
+        """Nothing ahead to arm. Falling through to a recording here would
+        capture over line 2 or 3, whichever the cursor happened to land on."""
+        result = drive_app(self.SEED_LINE_TWO + """
+        // Line 3 too, so only line 0 - behind the cursor - is left open.
+        await seed(3);
+        line(1).handlers.click();
+        await __settle();
+        await button("btn-record").handlers.click();
+        await __settle();
+        await button("btn-next-take").handlers.click();
+        await __settle();
+        console.log(JSON.stringify({
+          state: button("status-state").textContent,
+          title: button("title").textContent,
+        }));
+        """, live_server)
+        assert result["state"] == "IDLE", "it started a take with no free line ahead"
+        assert "3/" in result["title"], result["title"]
+
+    def test_the_key_is_dead_when_no_free_line_lies_ahead(self, live_server):
+        """A key that lights up promising an arm it cannot perform is a lie.
+        The old predicate only asked whether this was the last line."""
+        result = drive_app(self.SEED_LINE_TWO + """
+        await seed(3);
+        line(1).handlers.click();
+        await __settle();
+        await button("btn-record").handlers.click();
+        await __settle();
+        const midTake = button("btn-next-take").disabled;
+        await button("btn-stop").handlers.click();
+        await __settle();
+        console.log(JSON.stringify({ midTake }));
+        """, live_server)
+        assert result["midTake"] is True, "the key offered a next line that is not there"
+
 
 class TestRecordAbsorbedTheRedoButton:
     """Redo was its own key for no reason a deck would recognise: recording
     over a line that already has audio *is* the re-record. What must survive
-    the merge is the confirmation, because the old take is deleted."""
+    the merge is the confirmation, because the old take is deleted.
+
+    The confirmation is the page's own, not window.confirm: Chrome docks a
+    native modal to the top of the viewport, half a screen away from both the
+    line being asked about and the thumb that just pressed Record. The stub
+    below defines no window.confirm at all, so a controller that still reached
+    for one would throw rather than quietly pass."""
 
     RECORD_ONE = """
     __tracks.push({ stop: () => {} });
@@ -1269,62 +1496,181 @@ class TestRecordAbsorbedTheRedoButton:
 
     def test_recording_over_a_finished_line_asks_first(self, live_server):
         result = drive_app(self.RECORD_ONE + """
-        const asked = [];
-        window.confirm = (text) => { asked.push(text); return false; };
-        await button("btn-record").handlers.click();
+        tapRecord();
         await __settle();
+        const dialog = __dialog();
         console.log(JSON.stringify({
-          asked,
+          asked: dialog !== null,
+          // The accessible name, which is the question itself: a dialog whose
+          // wording only exists in a child span says nothing to a screen reader.
+          text: dialog?.attributes["aria-label"] || "",
           state: button("status-state").textContent,
-          message: button("message").textContent,
         }));
         """, live_server)
-        assert result["asked"], "the old take would have been deleted unasked"
-        assert "1" in result["asked"][0], result["asked"]
-        assert result["state"] == "IDLE", "declining still started a take"
+        assert result["asked"] is True, "the old take would have been deleted unasked"
+        assert "line 1" in result["text"], result["text"]
+        assert "delete" in result["text"].lower(), (
+            "the question does not say the take is destroyed"
+        )
+        assert result["state"] == "IDLE", "the take started before the answer"
+
+    def test_the_dialog_is_the_pages_own_not_the_browsers(self, live_server):
+        """A native confirm() is docked to the top of the viewport whatever the
+        page does, which is the complaint this replaces: the mouse is down at
+        the line, and the button to press is a screen away."""
+        result = drive_app(self.RECORD_ONE + """
+        let native = 0;
+        window.confirm = () => { native += 1; return true; };
+        tapRecord();
+        await __settle();
+        console.log(JSON.stringify({ native, dialog: __dialog() !== null }));
+        """, live_server)
+        assert result["native"] == 0, "the native confirm is still being used"
+        assert result["dialog"] is True
+
+    def test_the_dialog_sits_beside_the_line_it_is_asking_about(self, live_server):
+        """Positioned from the row's own box, so it lands where the pointer
+        already is rather than at a fixed corner of the page."""
+        result = drive_app(self.RECORD_ONE + """
+        line(0).rect =
+          { top: 400, left: 20, bottom: 456, right: 320, width: 300, height: 56 };
+        tapRecord();
+        await __settle();
+        console.log(JSON.stringify({ style: __dialog().style }));
+        """, live_server)
+        top = float(result["style"]["top"].removesuffix("px"))
+        assert 300 < top < 520, f"the dialog is not near the line: {result['style']}"
 
     def test_declining_keeps_the_existing_take(self, live_server):
         """The clip must still be there afterwards: a confirm that deletes
         before asking is worse than no confirm at all."""
         result = drive_app(self.RECORD_ONE + """
-        window.confirm = () => false;
-        await button("btn-record").handlers.click();
+        tapRecord();
+        await __settle();
+        __dialogButton("cancel").handlers.click();
         await __settle();
         const response = await fetch("/api/scripts/es/a.txt");
         const script = await response.json();
-        console.log(JSON.stringify({ recorded: script.recorded }));
+        console.log(JSON.stringify({
+          recorded: script.recorded,
+          message: button("message").textContent,
+          state: button("status-state").textContent,
+          dialog: __dialog() !== null,
+        }));
         """, live_server)
         assert result["recorded"] == [0], "the take was deleted after a refusal"
+        assert result["message"] == "kept the existing take"
+        assert result["state"] == "IDLE", "declining still started a take"
+        assert result["dialog"] is False, "the dialog stayed up after an answer"
 
-    def test_accepting_re_records_the_line(self, live_server):
+    def test_escape_cancels_and_never_confirms(self, live_server):
+        """The key a user reaches for to back out. Wiring it to the same
+        handler as Enter would delete the take it was pressed to protect."""
         result = drive_app(self.RECORD_ONE + """
-        window.confirm = () => true;
-        await button("btn-record").handlers.click();
+        tapRecord();
+        await __settle();
+        __press("Escape");
+        await __settle();
+        const response = await fetch("/api/scripts/es/a.txt");
+        const script = await response.json();
+        console.log(JSON.stringify({
+          recorded: script.recorded,
+          message: button("message").textContent,
+          state: button("status-state").textContent,
+          dialog: __dialog() !== null,
+        }));
+        """, live_server)
+        assert result["recorded"] == [0], "Escape deleted the take"
+        assert result["message"] == "kept the existing take"
+        assert result["state"] == "IDLE"
+        assert result["dialog"] is False
+
+    def test_enter_confirms(self, live_server):
+        result = drive_app(self.RECORD_ONE + """
+        tapRecord();
+        await __settle();
+        __press("Enter");
         await __settle();
         const during = button("status-state").textContent;
         await button("btn-stop").handlers.click();
         await __settle();
-        console.log(JSON.stringify({ during, opens:
+        console.log(JSON.stringify({ during }));
+        """, live_server)
+        assert result["during"] == "RECORDING", "Enter did not confirm"
+
+    def test_the_dialog_takes_focus_so_a_keyboard_user_is_not_stranded(
+        self, live_server
+    ):
+        """Without this the keys above answer a dialog that never had focus,
+        and a screen reader carries on reading the page behind it."""
+        result = drive_app(self.RECORD_ONE + """
+        tapRecord();
+        await __settle();
+        console.log(JSON.stringify({
+          focusedInside: __dialog().contains(globalThis.__focused),
+          role: __dialog().attributes["role"],
+          labelled: Boolean(__dialog().attributes["aria-label"]),
+        }));
+        """, live_server)
+        assert result["focusedInside"] is True, "nothing inside the dialog took focus"
+        assert result["role"] == "alertdialog"
+        assert result["labelled"] is True
+
+    def test_accepting_re_records_the_line(self, live_server):
+        result = drive_app(self.RECORD_ONE + """
+        tapRecord();
+        await __settle();
+        __dialogButton("confirm").handlers.click();
+        await __settle();
+        const during = button("status-state").textContent;
+        await button("btn-stop").handlers.click();
+        await __settle();
+        console.log(JSON.stringify({ during, dialog: __dialog() !== null, opens:
           __record.filter((entry) => entry === "getUserMedia").length }));
         """, live_server)
         assert result["during"] == "RECORDING", "the re-record never started"
         assert result["opens"] == 2
+        assert result["dialog"] is False
+
+    def test_a_second_tap_while_the_dialog_is_open_opens_no_second_dialog(
+        self, live_server
+    ):
+        """confirm() blocked the page; this does not. A key still live under
+        the thumb could stack a second dialog over the first, and answering
+        one would leave the other asking about a take already gone."""
+        result = drive_app(self.RECORD_ONE + """
+        tapRecord();
+        await __settle();
+        tapRecord();
+        await __settle();
+        const dialogs = __body.children.filter(
+          (kid) => kid.attributes["role"] === "alertdialog").length;
+        __dialogButton("cancel").handlers.click();
+        await __settle();
+        console.log(JSON.stringify({
+          dialogs,
+          opens: __record.filter((entry) => entry === "getUserMedia").length,
+        }));
+        """, live_server)
+        assert result["dialogs"] == 1, "a second tap stacked another dialog"
+        assert result["opens"] == 1, "a second tap started a take behind the dialog"
 
     def test_a_fresh_line_records_without_asking(self, live_server):
         """The confirm belongs to the delete, not to the key: an unrecorded
         line has nothing to lose, and a prompt on every take would be noise."""
         result = drive_app("""
         __tracks.push({ stop: () => {} });
-        const asked = [];
-        window.confirm = (text) => { asked.push(text); return true; };
+        // Awaited, unlike every tap above: with nothing to confirm this one
+        // settles by itself, and awaiting it is what proves it never waited.
         await button("btn-record").handlers.click();
         await __settle();
         const during = button("status-state").textContent;
+        const asked = __dialog() !== null;
         await button("btn-stop").handlers.click();
         await __settle();
         console.log(JSON.stringify({ asked, during }));
         """, live_server)
-        assert result["asked"] == [], "a first take asked for confirmation"
+        assert result["asked"] is False, "a first take asked for confirmation"
         assert result["during"] == "RECORDING"
 
     def test_the_key_announces_itself_as_a_re_record(self, live_server):
@@ -1340,6 +1686,80 @@ class TestRecordAbsorbedTheRedoButton:
         """, live_server)
         assert result["onRecorded"] == "Re-record"
         assert result["onFresh"] == "Record"
+
+
+class TestTheConfirmationIsClampedIntoTheViewport:
+    """The geometry, run as the pure function it is. It lives in state.js
+    because deciding where a box fits is arithmetic, not painting: render.js
+    measures the row and applies the answer, and this can be checked without a
+    layout engine at all.
+
+    A dialog anchored to a line near an edge is exactly where a naive
+    "row.bottom + gap" puts half of it off screen - and on a phone, off the
+    bottom is unreachable, so the take can be neither kept nor discarded."""
+
+    CALL = """
+    import {{ clampToViewport }} from "./state.js";
+    console.log(JSON.stringify(clampToViewport({args})));
+    """
+
+    # A phone-shaped viewport and a dialog small enough to fit in it, so an
+    # assertion that fails does so because of the clamp, not the numbers.
+    VIEWPORT = types.MappingProxyType({"width": 400, "height": 800})
+    BOX = types.MappingProxyType({"width": 260, "height": 120})
+
+    def clamp(self, **args):
+        return run_node(self.CALL.format(args=json.dumps(args, default=dict)))
+
+    def test_it_sits_under_a_line_with_room_below_it(self):
+        placed = self.clamp(
+            anchor={"top": 300, "left": 20, "bottom": 356, "right": 320},
+            box=self.BOX, viewport=self.VIEWPORT, gap=8,
+        )
+        assert placed["top"] == 364, placed
+
+    def test_a_line_at_the_bottom_edge_puts_it_above_the_line(self):
+        """Flipped rather than merely pushed up: sliding it up would cover the
+        very line the question is about."""
+        placed = self.clamp(
+            anchor={"top": 740, "left": 20, "bottom": 796, "right": 320},
+            box=self.BOX, viewport=self.VIEWPORT, gap=8,
+        )
+        assert placed["top"] + self.BOX["height"] <= self.VIEWPORT["height"]
+        assert placed["top"] + self.BOX["height"] <= 740, placed
+
+    def test_a_line_at_the_top_edge_keeps_the_whole_box_on_screen(self):
+        """With no room either side the box is pinned rather than flipped off
+        the top, because being reachable beats being beside the line."""
+        placed = self.clamp(
+            anchor={"top": 0, "left": 20, "bottom": 8, "right": 320},
+            box={"width": 260, "height": 790}, viewport=self.VIEWPORT, gap=8,
+        )
+        assert placed["top"] >= 0, placed
+        assert placed["top"] + 790 <= 800, placed
+
+    def test_it_never_runs_off_the_right_edge(self):
+        placed = self.clamp(
+            anchor={"top": 300, "left": 380, "bottom": 356, "right": 399},
+            box=self.BOX, viewport=self.VIEWPORT, gap=8,
+        )
+        assert placed["left"] + self.BOX["width"] <= self.VIEWPORT["width"], placed
+
+    def test_it_never_runs_off_the_left_edge(self):
+        placed = self.clamp(
+            anchor={"top": 300, "left": -120, "bottom": 356, "right": 100},
+            box=self.BOX, viewport=self.VIEWPORT, gap=8,
+        )
+        assert placed["left"] >= 0, placed
+
+    def test_a_box_wider_than_the_viewport_is_pinned_to_the_left(self):
+        """A phone in portrait with a long line: clamping both edges at once is
+        impossible, so the left edge wins and the box is the one that scrolls."""
+        placed = self.clamp(
+            anchor={"top": 300, "left": 20, "bottom": 356, "right": 320},
+            box={"width": 600, "height": 120}, viewport=self.VIEWPORT, gap=8,
+        )
+        assert placed["left"] == 0, placed
 
 
 class TestALineIsChosenByTappingIt:

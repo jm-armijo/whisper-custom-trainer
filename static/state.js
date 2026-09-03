@@ -66,6 +66,30 @@ export function firstUnrecorded(total, recorded) {
   return Math.max(total - 1, 0);
 }
 
+/** The next gap *ahead* of the cursor, or null when there is none.
+ *
+ * What the stop-and-record-next key arms. Positional `cursor + 1` was the bug:
+ * on a line whose successor already had a take, the key recorded straight over
+ * it. Three details are load-bearing:
+ *
+ * - strictly greater than `cursor`, so a take that failed to upload does not
+ *   re-arm the line the caller has just left;
+ * - no wrap-around, because this key is a forward read-record-read rhythm down
+ *   the page and jumping back would arm a line the reader is not looking at -
+ *   an earlier gap is reached by tapping it;
+ * - null rather than a clamp, unlike firstUnrecorded. "Nothing left ahead" is a
+ *   real answer here and the caller must stop cleanly on it; clamping to the
+ *   last line would hand back an index that already has audio.
+ */
+export function nextUnrecorded(cursor, total, recorded) {
+  for (let index = cursor + 1; index < total; index += 1) {
+    if (!recorded.has(index)) {
+      return index;
+    }
+  }
+  return null;
+}
+
 /** Clamp at both ends so the cursor never leaves the script. */
 export function moveCursor(cursor, action, total) {
   if (total <= 0) {
@@ -103,6 +127,40 @@ export function blinkGlyph(tick) {
 export function savedMessage({ seconds, tooLong }) {
   const saved = `saved ${seconds.toFixed(1)}s`;
   return tooLong ? `${saved} - exceeds Whisper's 30s window, consider redo` : saved;
+}
+
+/** Where a box anchored to a line actually fits on screen.
+ *
+ * Arithmetic, not painting, so it lives here rather than in render.js: the
+ * caller measures the row and applies the answer, and this can be checked
+ * without a layout engine.
+ *
+ * Below the line by preference, because that is where the pointer has just
+ * come from. Near the bottom edge it *flips* above rather than sliding up -
+ * sliding would cover the very line the question is about. When neither side
+ * has room (a short viewport, or a box taller than the space either way) the
+ * box is pinned into the viewport instead: being reachable beats being beside
+ * the line, and off the bottom of a phone is unreachable at all.
+ *
+ * The left edge wins over the right when the box is wider than the viewport,
+ * which is the phone-in-portrait case: both edges cannot be satisfied, and a
+ * box hanging off the right is still scrollable to.
+ */
+export function clampToViewport({ anchor, box, viewport, gap = 8 }) {
+  const below = anchor.bottom + gap;
+  const above = anchor.top - gap - box.height;
+  const top = below + box.height <= viewport.height
+    ? below
+    : above >= 0
+      ? above
+      : Math.max(Math.min(anchor.top, viewport.height - box.height), 0);
+
+  // Centred on the line rather than on its left edge: a chunk row spans the
+  // reading column, and its middle is where the eye and the pointer are.
+  const centred = anchor.left + (anchor.right - anchor.left) / 2 - box.width / 2;
+  const left = Math.max(Math.min(centred, viewport.width - box.width), 0);
+
+  return { top, left };
 }
 
 /** Session state for one open script. Holds no DOM and performs no I/O. */

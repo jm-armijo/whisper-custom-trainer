@@ -9,8 +9,10 @@ import {
   PLAYING,
   RECORDING,
   blinkGlyph,
+  clampToViewport,
   elapsedLabel,
   isBusy,
+  nextUnrecorded,
 } from "./state.js";
 
 export function elements() {
@@ -186,9 +188,16 @@ function drawControls(dom, view) {
 
   // The one control that spans two lines: it saves this take and immediately
   // arms the next, so it means nothing unless a take is actually running and
-  // there is a line left to move to.
+  // there is a line left for it to arm.
+  //
+  // The same rule the controller obeys rather than a second guess at it: "not
+  // the last line" used to stand in for it, which lit the key on a mid-script
+  // line with every later line already recorded - promising an arm the
+  // controller would then decline to perform.
   dom.nextTakeButton.disabled =
-    !recording || !hasScript || view.cursor >= view.chunks.length - 1;
+    !recording
+    || !hasScript
+    || nextUnrecorded(view.cursor, view.chunks.length, view.recorded) === null;
 }
 
 // ---------- waveform canvas ----------
@@ -346,4 +355,123 @@ export function setSidebarOpen(dom, open) {
   dom.sidebar.classList.toggle("is-open", open);
   dom.sidebar.classList.toggle("is-collapsed", !open);
   dom.menuToggle.setAttribute("aria-expanded", open ? "true" : "false");
+}
+
+// ---------- the re-record confirmation ----------
+//
+// window.confirm was doing this job, and Chrome docks a native modal to the top
+// of the viewport whatever the page is showing. Re-recording is started from a
+// line the user has just tapped, usually far down a long script, so the answer
+// button landed half a screen from both the line and the thumb that asked.
+//
+// Built here rather than declared in index.html: a dialog that exists in the
+// markup is a permanent part of the view's contract (every id render.js looks
+// up must be in the page), and this one is transient - it exists only between
+// the question and its answer.
+
+/** Ask about `index`, resolving true to go ahead and false to leave it alone.
+ *
+ * The promise is the whole seam: confirm() blocked the page, this does not, so
+ * the controller awaits an answer instead of reading one. Only one dialog is
+ * ever open, because a second question about a take the first has already
+ * discarded can only be answered wrongly. */
+export function confirmNearChunk(dom, { index, question, confirmLabel, cancelLabel }) {
+  if (openDialog) {
+    // Already asking. Resolving false here would be a silent "no" the user
+    // never gave; the standing dialog is the one they can see, so it answers.
+    return Promise.resolve(false);
+  }
+  return new Promise((resolve) => {
+    const dialog = buildDialog({ question, confirmLabel, cancelLabel });
+    openDialog = dialog.root;
+    document.body.appendChild(dialog.root);
+    // Positioned after it is in the document: an unattached node measures zero
+    // in every browser, which would clamp every dialog to the top-left corner.
+    positionNearChunk(dom, dialog.root, index);
+
+    const answer = (verdict) => {
+      dialog.root.remove();
+      openDialog = null;
+      resolve(verdict);
+    };
+    dialog.confirm.addEventListener("click", () => answer(true));
+    dialog.cancel.addEventListener("click", () => answer(false));
+    dialog.root.addEventListener("keydown", (event) => {
+      // Escape only ever cancels. Folding it into one handler with Enter is
+      // how a key pressed to back out ends up deleting the take.
+      if (event.key === "Escape") {
+        event.preventDefault();
+        answer(false);
+      } else if (event.key === "Enter") {
+        event.preventDefault();
+        answer(true);
+      }
+    });
+    // Focus lands on Cancel, not Confirm: a stray Space or Enter on a dialog
+    // that just appeared must not be the press that throws a take away.
+    dialog.cancel.focus();
+  });
+}
+
+// The dialog currently on screen, or null. Module-scoped rather than passed in
+// because "is one already open" is a fact about the screen, and the controller
+// owning a copy of it would be a second answer to the same question.
+let openDialog = null;
+
+function buildDialog({ question, confirmLabel, cancelLabel }) {
+  const root = document.createElement("div");
+  root.className = "confirm";
+  // alertdialog rather than dialog: it interrupts to ask about something
+  // destructive, which is exactly the distinction the role draws.
+  root.setAttribute("role", "alertdialog");
+  root.setAttribute("aria-modal", "true");
+  root.setAttribute("aria-label", question);
+  // Focusable as a container so keydown lands on the dialog rather than on
+  // whichever button happens to hold focus; -1 keeps it out of the tab order.
+  root.setAttribute("tabindex", "-1");
+
+  const text = document.createElement("p");
+  text.className = "confirm-question";
+  text.textContent = question;
+
+  const actions = document.createElement("div");
+  actions.className = "confirm-actions";
+
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.className = "confirm-button confirm-button--cancel";
+  cancel.dataset.action = "cancel";
+  cancel.textContent = cancelLabel;
+
+  const confirm = document.createElement("button");
+  confirm.type = "button";
+  confirm.className = "confirm-button confirm-button--confirm";
+  confirm.dataset.action = "confirm";
+  confirm.textContent = confirmLabel;
+
+  // Cancel first, so the key nearest the thumb on a phone is the harmless one.
+  actions.append(cancel, confirm);
+  root.append(text, actions);
+  return { root, cancel, confirm };
+}
+
+/** Pin the dialog beside its line, or as near as the viewport allows.
+ *
+ * Fixed rather than absolute: the chunk list scrolls under it, and an
+ * absolutely-positioned box would drift off with the row it was measured
+ * against while the question was still being read. */
+function positionNearChunk(dom, root, index) {
+  const row = dom.chunks.querySelector(`#chunk-${index}`);
+  if (!row) {
+    return;
+  }
+  const anchor = row.getBoundingClientRect();
+  const box = root.getBoundingClientRect();
+  const { top, left } = clampToViewport({
+    anchor,
+    box: { width: box.width, height: box.height },
+    viewport: { width: window.innerWidth, height: window.innerHeight },
+  });
+  root.style.top = `${top}px`;
+  root.style.left = `${left}px`;
 }
