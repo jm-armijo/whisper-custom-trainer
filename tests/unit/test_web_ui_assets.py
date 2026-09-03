@@ -274,3 +274,119 @@ class TestTheWaveformKeepsTheUiSplit:
 
     def test_the_canvas_the_view_looks_up_exists_in_the_markup(self):
         assert 'id="waveform"' in INDEX.read_text(encoding="utf8")
+
+
+def root_block(css):
+    """The `:root` declarations only - where the palette is required to live."""
+    start = css.index(":root {")
+    return css[start : css.index("}", start)]
+
+
+def rule_block(css, selector):
+    """The declarations of one rule, by exact selector."""
+    start = css.index(f"\n{selector} {{") + 1
+    return css[start : css.index("}", start)]
+
+
+class TestTheTransportKeysAreColoured:
+    """A cassette deck's keys are not four identical grey slabs: Record is red
+    on every machine ever built, and the eye finds it by colour rather than by
+    reading a glyph. The colours are the stylesheet's decision alone - render.js
+    toggles a state class and never names a colour."""
+
+    KEYS = (".control--play", ".control--stop", ".control--next-take", ".control--record")
+
+    def test_every_transport_key_has_its_own_colour(self):
+        css = STYLE.read_text(encoding="utf8")
+        for selector in self.KEYS:
+            assert re.search(r"var\(--transport-[a-z-]+\)", rule_block(css, selector)), selector
+
+    def test_every_transport_colour_is_a_root_custom_property(self):
+        """One palette table, not colours sprinkled through the rules."""
+        css = STYLE.read_text(encoding="utf8")
+        root = root_block(css)
+        for token in sorted(set(re.findall(r"--transport-[a-z-]+", css))):
+            assert f"{token}:" in root, token
+
+    def test_no_transport_rule_carries_a_colour_literal(self):
+        css = STYLE.read_text(encoding="utf8")
+        for selector in self.KEYS:
+            block = rule_block(css, selector)
+            assert re.search(r"#[0-9a-fA-F]{3,8}\b", block) is None, selector
+
+    def test_record_is_red_at_rest_not_only_while_recording(self):
+        """Red is the universal record colour; the key was green until a take
+        was already running, which is when the colour is least needed."""
+        css = STYLE.read_text(encoding="utf8")
+        root = root_block(css)
+        rest = rule_block(css, ".control--record")
+        assert "--transport-record" in rest
+        assert "var(--recorded)" not in rest, "green is the *recorded* colour, not record"
+        assert re.search(r"--transport-record:\s*var\(--ansi-red\)", root)
+
+    def test_a_running_take_still_reads_differently_from_an_armed_one(self):
+        """Both states are red, so recording has to be lit rather than merely
+        coloured, or the key stops saying whether the tape is moving."""
+        css = STYLE.read_text(encoding="utf8")
+        rest = rule_block(css, ".control--record")
+        live = rule_block(css, ".control--record.is-recording")
+        assert live.strip()
+        assert live != rest
+
+    def test_the_view_emits_state_classes_and_never_a_transport_colour(self):
+        """UI/logic separation, the rule the stylesheet header states. The
+        canvas is the one place render.js may name a colour at all - a 2D
+        context cannot inherit a class - and even there it reads the custom
+        property first. Nothing about the transport goes near it."""
+        source = code(RENDER)
+        body = source[source.index("function drawControls("):]
+        body = body[: body.index("\n}")]
+        assert re.search(r"#[0-9a-fA-F]{3,8}\b", body) is None
+        assert "--transport-" not in source
+
+    def test_a_disabled_key_stays_legible(self):
+        """The transport spends most of its life disabled (see drawControls),
+        and opacity 0.35 over a dark ground is where a saturated colour goes
+        muddy - so the disabled rule lifts the fade rather than inheriting it."""
+        css = STYLE.read_text(encoding="utf8")
+        faded = float(re.search(r"\.control:disabled \{[^}]*opacity: ([\d.]+)", css).group(1))
+        transport = float(
+            re.search(r"\.control--transport:disabled \{[^}]*opacity: ([\d.]+)", css).group(1)
+        )
+        assert transport > faded
+
+
+class TestTheTransportGlyphsAreLegibleAtArmsLength:
+    """The glyph is the whole label on these keys, read from reading distance
+    with a script in front of the face - not from a phone held up close."""
+
+    def test_the_glyphs_are_about_twice_their_old_size(self):
+        css = STYLE.read_text(encoding="utf8")
+        size = float(
+            re.search(r"\.control--transport \{[^}]*font-size: ([\d.]+)rem", css).group(1)
+        )
+        assert 2.4 <= size <= 3.0, size
+
+    def test_the_phone_row_is_no_smaller_than_the_desktop_one(self):
+        """A phone is the device this is read from, so its keys cannot shrink."""
+        css = STYLE.read_text(encoding="utf8")
+        sizes = re.findall(r"\.control--transport \{[^}]*?font-size: ([\d.]+)rem", css, re.S)
+        assert len(sizes) == 2, "the phone media query should still size the row"
+        assert float(sizes[1]) >= float(sizes[0])
+
+    def test_the_two_glyph_key_does_not_outgrow_the_single_glyph_ones(self):
+        """⏹⏺ is two characters in a slab the same width as its neighbours; set
+        at the row's size it overflows the key."""
+        css = STYLE.read_text(encoding="utf8")
+        row = float(re.search(r"\.control--transport \{[^}]*font-size: ([\d.]+)rem", css).group(1))
+        pair = float(re.search(r"\.control--next-take \{[^}]*font-size: ([\d.]+)rem", css).group(1))
+        assert pair < row
+
+    def test_a_taller_glyph_gets_a_taller_key(self):
+        """min-height was sized for a 1.35rem glyph; leaving it would clip the
+        doubled one against the padding."""
+        css = STYLE.read_text(encoding="utf8")
+        height = float(
+            re.search(r"\.control--transport \{[^}]*min-height: ([\d.]+)rem", css).group(1)
+        )
+        assert height >= 4.0, height

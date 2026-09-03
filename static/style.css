@@ -35,6 +35,34 @@
   --status-recording-bg: var(--ansi-red);
   --status-recording-fg: #14161a;
 
+  /* The transport keys, coloured the way a deck's are. Only the glyph is
+   * tinted, not the cap: four saturated slabs in a row would shout over the
+   * script, which is the thing on this page that has to be read.
+   *
+   * Record is red on every deck ever built, and it is the one key that
+   * destroys what is already on the tape - the same reason the curses view
+   * paints its dot --ansi-red. It is red *at rest*, not only once a take is
+   * running: the warning is needed before the press, not after it.
+   * Recording then lights the whole cap rather than changing hue, so "armed"
+   * and "running" stay distinguishable without spending a second colour. */
+  --transport-record: var(--ansi-red);
+  --transport-record-live-bg: var(--ansi-red);
+  --transport-record-live-fg: #fff;
+  /* Green for play, the deck convention and the same green a finished line
+   * already uses here - on this page green consistently means "audio you
+   * have". */
+  --transport-play: var(--ansi-green-bright);
+  /* Stop is deliberately uncoloured: it ends whatever is running, so it
+   * belongs to neither the playback nor the record side, and a neutral key
+   * between them is what makes the red and the green read as decisions. */
+  --transport-stop: var(--text);
+  /* Stop-and-record-next is half of each key it combines, so it takes the
+   * colour of the half that matters - it is the one that arms the microphone
+   * again - held a step back in yellow-amber rather than a second red, which
+   * would leave two keys claiming to be Record. Amber is already this page's
+   * "next line to read" colour, which is exactly what this key selects. */
+  --transport-next-take: var(--ansi-yellow);
+
   /* The waveform strip. render.js reads these off the canvas rather than
    * holding hex values of its own, so the palette stays one table. */
   --waveform-axis: var(--border);
@@ -368,13 +396,21 @@ body {
  * in a row, not the rounded pills the rest of the page uses, and the taller
  * slab is what makes the bar read as a transport rather than a toolbar. */
 .control--transport {
-  font-size: 1.35rem;
+  font-size: 2.7rem;
   line-height: 1;
-  min-height: 3rem;
-  padding: 0.45rem 0.25rem;
+  min-height: 4.4rem;
+  padding: 0.4rem 0.15rem;
   border-radius: 3px;
   border-top-color: color-mix(in srgb, var(--border) 40%, #fff);
   box-shadow: inset 0 -2px 0 rgb(0 0 0 / 0.35);
+}
+
+/* A key spends most of its life disabled - drawControls dims three of the four
+ * between takes - and 0.35 is where a saturated glyph on a near-black ground
+ * stops being a shape you can name. The row therefore fades less than the rest
+ * of the page's controls: still plainly dead, still readable. */
+.control--transport:disabled {
+  opacity: 0.55;
 }
 
 /* Pressed, not merely highlighted: the key travels down into the well. */
@@ -383,10 +419,23 @@ body {
   box-shadow: inset 0 -1px 0 rgb(0 0 0 / 0.35);
 }
 
-/* Two glyphs share this key, so it must not outgrow the single-glyph ones. */
+/* The colour is on the glyph, not the cap: the keys stay one moulding, and
+ * what the eye picks out is the symbol, the way a deck's are printed. */
+.control--play {
+  color: var(--transport-play);
+}
+
+.control--stop {
+  color: var(--transport-stop);
+}
+
+/* Two glyphs share this key, so it must not outgrow the single-glyph ones: at
+ * the row's size the pair overflows a slab sized for one character. The ratio
+ * is the same one it had before the glyphs doubled. */
 .control--next-take {
-  font-size: 1.1rem;
-  letter-spacing: -0.08em;
+  font-size: 2.2rem;
+  letter-spacing: -0.1em;
+  color: var(--transport-next-take);
 }
 
 /* Record is the key set apart, the way the hardware separated the one control
@@ -394,15 +443,16 @@ body {
  * playback keys read as a group rather than as four identical slabs. */
 .control--record {
   margin-left: 0.5rem;
-  background: var(--recorded);
-  border-color: var(--recorded);
-  color: #06120c;
+  color: var(--transport-record);
 }
 
+/* Lit rather than recoloured. Both states are red - red is what the key means -
+ * so a running take fills the cap instead, which is visible at the edge of
+ * vision while the eyes are on the script. */
 .control--record.is-recording {
-  background: var(--record-dot);
-  border-color: var(--record-dot);
-  color: #fff;
+  background: var(--transport-record-live-bg);
+  border-color: var(--transport-record-live-bg);
+  color: var(--transport-record-live-fg);
 }
 
 /* ---------- phone ---------- */
@@ -438,7 +488,11 @@ body {
   /* The transport keeps its four-across row on a phone: they are the buttons
    * used mid-take, and reflowing them would move the key under the thumb. */
   .control--transport {
-    font-size: 1.5rem;
+    font-size: 2.9rem;
+  }
+
+  .control--next-take {
+    font-size: 2.35rem;
   }
 }
 
@@ -446,4 +500,66 @@ body {
   .sidebar {
     transition: none;
   }
+}
+
+/* ---------- the re-record confirmation ---------- */
+
+/* Built by render.js and positioned from JS, because it has to land beside the
+ * line it is asking about - a native confirm() docked itself to the top of the
+ * viewport, a screen away from the thumb that pressed Record.
+ *
+ * Fixed rather than absolute: the chunk list scrolls underneath, and top/left
+ * are written in viewport coordinates by state.clampToViewport. */
+.confirm {
+  position: fixed;
+  z-index: 20;
+  max-width: min(20rem, calc(100vw - 1rem));
+  padding: 0.75rem;
+  background: var(--bg-raised);
+  /* The colour of the thing being warned about: this dialog only ever appears
+   * because a saved take is about to be deleted. */
+  border: 1px solid var(--record-dot);
+  border-radius: 0.5rem;
+  box-shadow: 0 0.5rem 1.5rem rgb(0 0 0 / 60%);
+  font-family: var(--font-ui);
+  color: var(--text);
+}
+
+.confirm-question {
+  margin: 0 0 0.75rem;
+  font-size: 0.95rem;
+  line-height: 1.35;
+}
+
+.confirm-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+/* Both keys are full tap targets: this is answered on a phone, one-handed,
+ * and a 24px button beside a destructive one is a mis-tap waiting to happen. */
+.confirm-button {
+  flex: 1;
+  min-height: var(--tap-target);
+  padding: 0 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+  background: var(--bg-sunken);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 1rem;
+  cursor: pointer;
+}
+
+.confirm-button:focus-visible {
+  outline: 2px solid var(--title-fg);
+  outline-offset: 2px;
+}
+
+/* The destructive key wears the record colour, so the one that throws a take
+ * away is the one that does not look like the safe default. */
+.confirm-button--confirm {
+  background: var(--record-dot);
+  border-color: var(--record-dot);
+  color: #fff;
 }
