@@ -10,6 +10,7 @@ import csv
 import pytest
 
 import recorder_scripts as rsc
+import recorder_state as rs
 import whisper_pipeline as wp
 
 
@@ -39,17 +40,23 @@ def script_of(sentences):
 
 @pytest.fixture
 def dataset(tmp_path):
-    """A dataset.csv plus the wavs backing it, as recorder_state expects."""
+    """A dataset.csv plus the wavs backing it, as recorder_state expects.
+
+    Clips are named through rs.clip_path rather than by hand, so the fixture
+    cannot drift from the scheme the two recorders actually write - which is
+    how the cross-script collision stayed invisible to these tests.
+    `script` is the qualified name the take was read from.
+    """
     audio_dir = tmp_path / "data"
     audio_dir.mkdir()
     csv_path = tmp_path / "dataset.csv"
 
-    def build(rows):
+    def build(rows, script="es.txt"):
         with csv_path.open("w", newline="", encoding="utf8") as handle:
             writer = csv.writer(handle)
             writer.writerow(wp.CSV_COLUMNS)
             for index, language in rows:
-                wav = audio_dir / f"{language}_{index:05d}.wav"
+                wav = rs.clip_path(audio_dir, language, index, script)
                 writer.writerow([str(wav), f"text {index}", language])
                 wav.write_bytes(b"RIFF")
         return csv_path, audio_dir
@@ -295,3 +302,167 @@ class TestLanguageDirectories:
         (folder / "bonjour.txt").write_text("Bonjour.", encoding="utf8")
         with pytest.raises(wp.PipelineError):
             rsc.resolve_script(tree, "fr/bonjour.txt")
+
+
+class TestScriptsDoNotShareTakes:
+    """A take belongs to the script it was read from, not to its language.
+
+    Regression: a clip was named for (language, index) alone, so recording
+    line 5 of en/general.txt wrote en_00005.wav and every other en script
+    answered 'yes, line 5 is recorded' by finding that file on disk. The
+    picker showed a script nobody had opened as far along as the one being
+    read.
+    """
+
+    def test_a_take_in_one_script_leaves_a_sibling_script_empty(
+        self, scripts_dir, tmp_path
+    ):
+        text = script_of(4)
+        directory = scripts_dir({"en/general.txt": text, "en/software.txt": text})
+        csv_path = tmp_path / "dataset.csv"
+        audio_dir = tmp_path / "data"
+        audio_dir.mkdir()
+
+        record(csv_path, audio_dir, "en/general.txt", "en", 0, wp.chunk_text(text)[0])
+
+        other = rsc.script_progress(
+            directory / "en" / "software.txt", csv_path, audio_dir, "en",
+            "en/software.txt",
+        )
+        assert (other["recorded"], other["recorded_count"]) == (set(), 0)
+
+    def test_the_script_that_was_read_still_reports_its_take(
+        self, scripts_dir, tmp_path
+    ):
+        text = script_of(4)
+        directory = scripts_dir({"en/general.txt": text, "en/software.txt": text})
+        csv_path = tmp_path / "dataset.csv"
+        audio_dir = tmp_path / "data"
+        audio_dir.mkdir()
+
+        record(csv_path, audio_dir, "en/general.txt", "en", 0, wp.chunk_text(text)[0])
+
+        mine = rsc.script_progress(
+            directory / "en" / "general.txt", csv_path, audio_dir, "en",
+            "en/general.txt",
+        )
+        assert mine["recorded"] == {0}
+
+    def test_two_scripts_record_the_same_index_without_overwriting(
+        self, scripts_dir, tmp_path
+    ):
+        """Distinct files, or the second take would replace the first."""
+        text = script_of(4)
+        scripts_dir({"en/general.txt": text, "en/software.txt": text})
+        audio_dir = tmp_path / "data"
+        audio_dir.mkdir()
+
+        first = rs.clip_path(audio_dir, "en", 0, "en/general.txt")
+        second = rs.clip_path(audio_dir, "en", 0, "en/software.txt")
+        assert first != second
+
+    def test_a_clip_name_survives_a_script_name_needing_escaping(self, tmp_path):
+        """Script names carry a separator and a suffix; the file name may not."""
+        clip = rs.clip_path(tmp_path, "en", 3, "en/soft ware.v2.txt")
+        assert "/" not in clip.name and clip.parent == tmp_path
+
+
+def record(csv_path, audio_dir, script, language, index, text):
+    """Commit a take exactly as either front end does, without a microphone."""
+    destination = rs.clip_path(audio_dir, language, index, script)
+    destination.write_bytes(b"RIFF")
+    rs.upsert_row(csv_path, destination, text, language)
+
+
+class TestLegacyTakesKeepCounting:
+    """Clips recorded before clips carried their script must not be orphaned.
+
+    The user's library is named {language}_{index}.wav with no script in it,
+    and prune_missing deletes any row whose file is gone - so a scheme that
+    simply stopped looking for those names would have deleted every existing
+    take on the next startup. The dataset's own text is the only surviving
+    evidence of which script a legacy clip came from, so that is what decides.
+    """
+
+    def test_a_legacy_clip_counts_for_the_script_whose_text_it_matches(
+        self, scripts_dir, tmp_path
+    ):
+        text = script_of(4)
+        directory = scripts_dir({"en/general.txt": text})
+        csv_path = tmp_path / "dataset.csv"
+        audio_dir = tmp_path / "data"
+        audio_dir.mkdir()
+        legacy_take(csv_path, audio_dir, "en", 0, wp.chunk_text(text)[0])
+
+        progress = rsc.script_progress(
+            directory / "en" / "general.txt", csv_path, audio_dir, "en",
+            "en/general.txt",
+        )
+        assert progress["recorded"] == {0}
+
+    def test_a_legacy_clip_does_not_count_for_a_script_it_never_came_from(
+        self, scripts_dir, tmp_path
+    ):
+        recorded_text = script_of(4)
+        other_text = "\n\n".join(
+            f"a completely different long sentence written for another script {n}."
+            for n in range(4)
+        )
+        directory = scripts_dir(
+            {"en/general.txt": recorded_text, "en/software.txt": other_text}
+        )
+        csv_path = tmp_path / "dataset.csv"
+        audio_dir = tmp_path / "data"
+        audio_dir.mkdir()
+        legacy_take(csv_path, audio_dir, "en", 0, wp.chunk_text(recorded_text)[0])
+
+        progress = rsc.script_progress(
+            directory / "en" / "software.txt", csv_path, audio_dir, "en",
+            "en/software.txt",
+        )
+        assert progress["recorded"] == set()
+
+    def test_a_legacy_take_survives_a_prune(self, scripts_dir, tmp_path):
+        """prune_missing must not read a legacy row as a clip gone missing."""
+        text = script_of(4)
+        scripts_dir({"en/general.txt": text})
+        csv_path = tmp_path / "dataset.csv"
+        audio_dir = tmp_path / "data"
+        audio_dir.mkdir()
+        legacy_take(csv_path, audio_dir, "en", 0, wp.chunk_text(text)[0])
+
+        assert rs.prune_missing(csv_path, audio_dir) == 0
+
+    def test_re_recording_replaces_the_legacy_file_rather_than_shadowing_it(
+        self, scripts_dir, tmp_path
+    ):
+        """Two files for one line would leave the picker choosing between takes."""
+        text = script_of(4)
+        scripts_dir({"en/general.txt": text})
+        csv_path = tmp_path / "dataset.csv"
+        audio_dir = tmp_path / "data"
+        audio_dir.mkdir()
+        legacy_take(csv_path, audio_dir, "en", 0, wp.chunk_text(text)[0])
+
+        target = rs.existing_clip_path(
+            csv_path, audio_dir, "en", 0, "en/general.txt",
+            dict(enumerate(wp.chunk_text(text))),
+        )
+        assert target == rs.clip_path(audio_dir, "en", 0)
+
+    def test_a_fresh_line_is_written_under_the_scoped_name(self, tmp_path):
+        csv_path = tmp_path / "dataset.csv"
+        audio_dir = tmp_path / "data"
+        audio_dir.mkdir()
+
+        target = rs.existing_clip_path(
+            csv_path, audio_dir, "en", 0, "en/general.txt", {0: "anything"}
+        )
+        assert target == rs.clip_path(audio_dir, "en", 0, "en/general.txt")
+
+
+def legacy_take(csv_path, audio_dir, language, index, text):
+    """A take named the way the recorder named them before scripts scoped clips."""
+    destination = rs.clip_path(audio_dir, language, index)
+    destination.write_bytes(b"RIFF")
+    rs.upsert_row(csv_path, destination, text, language)

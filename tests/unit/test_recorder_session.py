@@ -29,7 +29,12 @@ def session(tmp_path):
 
     out_dir = tmp_path / "data"
     out_dir.mkdir()
-    return Namespace(out_dir=out_dir, csv=tmp_path / "dataset.csv", lang="es")
+    # --text is required on the command line, so the controller always has a
+    # script; it is what scopes a clip to the script it was read from.
+    return Namespace(
+        out_dir=out_dir, csv=tmp_path / "dataset.csv", lang="es",
+        text=tmp_path / "es" / "script.txt",
+    )
 
 
 @pytest.fixture
@@ -49,6 +54,11 @@ def drive(monkeypatch, session):
     return run
 
 
+def clip(session, index):
+    """Where a take for this session's script lands, named as the recorder names it."""
+    return rs.clip_path(session.out_dir, session.lang, index, session.text)
+
+
 def rows_of(csv_path):
     if not csv_path.exists():
         return []
@@ -64,7 +74,7 @@ class TestRecording:
     def test_records_the_selected_chunk(self, session, fake_microphone, drive):
         drive(["uno dos tres"], [SPACE, QUIT])
 
-        assert (session.out_dir / "es_00000.wav").exists()
+        assert clip(session, 0).exists()
 
     def test_writes_one_row_per_recording(self, session, fake_microphone, drive):
         drive(["uno dos tres"], [SPACE, QUIT])
@@ -76,7 +86,7 @@ class TestRecording:
 
         drive(["uno dos tres"], [SPACE, QUIT])
 
-        info = sf.info(str(session.out_dir / "es_00000.wav"))
+        info = sf.info(str(clip(session, 0)))
         assert (info.samplerate, info.channels) == (wp.SAMPLE_RATE, 1)
 
     def test_filename_encodes_language_and_index(
@@ -84,7 +94,7 @@ class TestRecording:
     ):
         drive(["uno", "dos"], [KEY_DOWN, SPACE, QUIT])
 
-        assert (session.out_dir / "es_00001.wav").exists()
+        assert clip(session, 1).exists()
 
     def test_quit_without_recording_leaves_no_dataset(
         self, session, fake_microphone, drive
@@ -103,28 +113,28 @@ class TestNavigation:
     def test_arrow_down_moves_the_cursor(self, session, fake_microphone, drive):
         drive(["uno", "dos", "tres"], [KEY_DOWN, KEY_DOWN, SPACE, QUIT])
 
-        assert (session.out_dir / "es_00002.wav").exists()
+        assert clip(session, 2).exists()
 
     def test_arrow_up_returns_to_an_earlier_line(
         self, session, fake_microphone, drive
     ):
         drive(["uno", "dos"], [KEY_DOWN, KEY_UP, SPACE, QUIT])
 
-        assert (session.out_dir / "es_00000.wav").exists()
+        assert clip(session, 0).exists()
 
     def test_cursor_does_not_move_above_the_first_line(
         self, session, fake_microphone, drive
     ):
         drive(["uno", "dos"], [KEY_UP, KEY_UP, SPACE, QUIT])
 
-        assert (session.out_dir / "es_00000.wav").exists()
+        assert clip(session, 0).exists()
 
     def test_cursor_does_not_move_past_the_last_line(
         self, session, fake_microphone, drive
     ):
         drive(["uno", "dos"], [KEY_DOWN, KEY_DOWN, KEY_DOWN, SPACE, QUIT])
 
-        assert (session.out_dir / "es_00001.wav").exists()
+        assert clip(session, 1).exists()
 
 
 class TestReRecording:
@@ -140,11 +150,11 @@ class TestReRecording:
         self, session, fake_microphone, drive
     ):
         drive(["uno dos"], [SPACE, QUIT])
-        original = (session.out_dir / "es_00000.wav").read_bytes()
+        original = clip(session, 0).read_bytes()
 
         drive(["uno dos"], [SPACE, NO, QUIT])
 
-        assert (session.out_dir / "es_00000.wav").read_bytes() == original
+        assert clip(session, 0).read_bytes() == original
 
     def test_first_recording_needs_no_confirmation(
         self, session, fake_microphone, drive
@@ -164,13 +174,15 @@ class TestResume:
         # Fresh session: cursor should land on line 2, so SPACE records index 1.
         drive(["uno", "dos", "tres"], [SPACE, QUIT])
 
-        assert (session.out_dir / "es_00001.wav").exists()
+        assert clip(session, 1).exists()
 
     def test_a_deleted_clip_reopens_its_line(self, session, fake_microphone, drive):
         drive(["uno", "dos"], [SPACE, QUIT])
-        (session.out_dir / "es_00000.wav").unlink()
+        clip(session, 0).unlink()
 
-        recorded = rs.recorded_indices(session.csv, session.out_dir, "es")
+        recorded = rs.recorded_indices(
+            session.csv, session.out_dir, "es", session.text
+        )
 
         assert recorded == set()
 
@@ -179,7 +191,9 @@ class TestResume:
     ):
         drive(["uno", "dos"], [SPACE, QUIT])
 
-        recorded = rs.recorded_indices(session.csv, session.out_dir, "es")
+        recorded = rs.recorded_indices(
+            session.csv, session.out_dir, "es", session.text
+        )
 
         assert recorded == {0}
 

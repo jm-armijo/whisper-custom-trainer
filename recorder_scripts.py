@@ -94,7 +94,12 @@ def script_progress(path, csv_path, audio_dir, language, name=None):
         raise ScriptNotFound(f"Script not found: {script}")
 
     chunks = wp.chunk_text(script.read_text(encoding="utf8"))
-    recorded = rs.recorded_indices(csv_path, audio_dir, language)
+    # The qualified name is what scopes a clip to this script; falling back to
+    # the filename keeps a caller that passes only a path working, and two
+    # languages cannot collide because the language is in the key too.
+    recorded = rs.recorded_indices(
+        csv_path, audio_dir, language, name or script.name, dict(enumerate(chunks))
+    )
     # Only indices the script still has count: a shortened script would
     # otherwise report more takes recorded than there are lines to read.
     recorded = {index for index in recorded if index < len(chunks)}

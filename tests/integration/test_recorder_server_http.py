@@ -193,7 +193,7 @@ class TestRecordingOverHttp:
         call(f"{server.base}/api/scripts/es/a.txt/chunks/2",
              method="POST", body=wav_bytes(), content_type="audio/wav")
 
-        assert rs.clip_path(server.config.audio_dir, "es", 2).exists()
+        assert rs.clip_path(server.config.audio_dir, "es", 2, "es/a.txt").exists()
 
     def test_the_row_carries_the_chunk_text(self, server):
         call(f"{server.base}/api/scripts/es/a.txt/chunks/1",
@@ -355,8 +355,8 @@ class TestBothLanguagesShareOneDataset:
              method="POST", body=wav_bytes(), content_type="audio/wav")
 
         assert (
-            rs.clip_path(server.config.audio_dir, "es", 0).exists()
-            and rs.clip_path(server.config.audio_dir, "en", 0).exists()
+            rs.clip_path(server.config.audio_dir, "es", 0, "es/a.txt").exists()
+            and rs.clip_path(server.config.audio_dir, "en", 0, "en/a.txt").exists()
         )
 
 

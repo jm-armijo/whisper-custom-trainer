@@ -53,7 +53,9 @@ def run(stdscr, chunks, args, theme):
     # A clip deleted between sessions leaves a row pointing at a missing file,
     # which train.py cannot load; drop those before deriving what is recorded.
     rs.prune_missing(args.csv, args.out_dir)
-    recorded = rs.recorded_indices(args.csv, args.out_dir, args.lang)
+    recorded = rs.recorded_indices(
+        args.csv, args.out_dir, args.lang, args.text, dict(enumerate(chunks))
+    )
     cursor = rs.first_unrecorded(len(chunks), recorded)
     message = ""
 
@@ -73,7 +75,7 @@ def run(stdscr, chunks, args, theme):
             if quitting:
                 return
         elif action == "play":
-            message = play_clip(args, cursor, recorded)
+            message = play_clip(args, cursor, recorded, chunks)
         elif action == "skip":
             cursor = move_cursor(cursor, "down", len(chunks))
             message = ""
@@ -129,7 +131,11 @@ def handle_record(view, chunks, recorded, cursor, args, theme):
         kept = " - previous take kept" if cursor in recorded else ""
         return recorded, f"discarded: {seconds:.2f}s is too short to use{kept}", False
 
-    destination = rs.clip_path(args.out_dir, args.lang, cursor)
+    # Same rule as the web recorder: a re-record replaces the take already on
+    # this line, including one named before clips carried their script.
+    destination = rs.existing_clip_path(
+        args.csv, args.out_dir, args.lang, cursor, args.text, dict(enumerate(chunks))
+    )
     write_clip(destination, clip)
     rs.upsert_row(args.csv, destination, chunks[cursor], args.lang)
 
@@ -176,14 +182,16 @@ def capture_clip(view, on_tick):
     return np.concatenate(frames, axis=0).flatten(), stopped_by
 
 
-def play_clip(args, cursor, recorded):
+def play_clip(args, cursor, recorded, chunks):
     """Play a take back so it can be checked without leaving the recorder."""
     if cursor not in recorded:
         return "nothing recorded on this line yet"
 
     import sounddevice as sd
 
-    samples = wp.load_audio(rs.clip_path(args.out_dir, args.lang, cursor))
+    samples = wp.load_audio(rs.existing_clip_path(
+        args.csv, args.out_dir, args.lang, cursor, args.text, dict(enumerate(chunks))
+    ))
     sd.play(samples, wp.SAMPLE_RATE)
     sd.wait()
     return f"played line {cursor + 1}"

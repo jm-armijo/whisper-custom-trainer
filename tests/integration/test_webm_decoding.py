@@ -50,4 +50,4 @@ class TestWebmDecoding:
 
     def test_a_webm_take_reaches_the_dataset(self, paths, webm):
         srv.save_chunk(paths, "es/a.txt", 0, webm)
-        assert rs.recorded_indices(paths.csv_path, paths.audio_dir, "es") == {0}
+        assert rs.recorded_indices(paths.csv_path, paths.audio_dir, "es", "es/a.txt") == {0}

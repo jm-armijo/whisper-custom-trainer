@@ -62,16 +62,77 @@ def dataset_lock(csv_path):
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
-def clip_path(audio_dir, language, index):
-    """The one filename a chunk's audio may occupy, for any index."""
-    return Path(audio_dir) / f"{language}_{index:05d}.wav"
+def script_slug(script):
+    """A script's name reduced to something a filename may contain.
+
+    A qualified name is "en/general.txt": it carries a separator, a suffix, and
+    whatever punctuation the file was given. Everything outside [A-Za-z0-9] is
+    collapsed to a dash so the result is safe on any filesystem, and the
+    language prefix and .txt suffix are dropped because clip_path already
+    writes the language and every script ends in the same suffix.
+    """
+    stem = Path(str(script)).name
+    if stem.endswith(".txt"):
+        stem = stem[: -len(".txt")]
+    slug = re.sub(r"[^A-Za-z0-9]+", "-", stem).strip("-")
+    # A name made entirely of punctuation would otherwise slug to "", putting
+    # two such scripts back on one key - the collision this whole change exists
+    # to stop.
+    return slug or "script"
 
 
-def recorded_indices(csv_path, audio_dir, language):
+def clip_path(audio_dir, language, index, script=None):
+    """The one filename a chunk's audio may occupy, for any index.
+
+    Scoped by script as well as language: keyed on (language, index) alone,
+    line 5 of en/general.txt and line 5 of en/software_engineering.txt named
+    the same file, so recording either one made the other report progress it
+    had never made - and a second take silently overwrote the first.
+
+    `script` is optional so a caller with no script in hand (a legacy dataset,
+    a test) still names the historical file; see recorded_indices for how those
+    older names keep counting.
+    """
+    stem = f"{language}_{index:05d}" if script is None \
+        else f"{language}_{script_slug(script)}_{index:05d}"
+    return Path(audio_dir) / f"{stem}.wav"
+
+
+def existing_clip_path(csv_path, audio_dir, language, index, script, texts=None):
+    """The clip already on disk for this line, or where a new one would go.
+
+    Playback and deletion must reach a take recorded before clips were scoped
+    by script, or the user's existing library would be unplayable and
+    undeletable while still occupying the line. A legacy file is only offered
+    when the dataset shows it belongs to this script - the same provenance rule
+    recorded_indices applies, so what the picker counts and what playback finds
+    cannot disagree. A new take always lands on the scoped name.
+    """
+    scoped = clip_path(audio_dir, language, index, script)
+    if scoped.exists():
+        return scoped
+
+    legacy = clip_path(audio_dir, language, index)
+    if legacy.exists() and index in recorded_indices(
+        csv_path, audio_dir, language, script, texts
+    ):
+        return legacy
+    return scoped
+
+
+def recorded_indices(csv_path, audio_dir, language, script=None, texts=None):
     """Indices backed by BOTH a CSV row and a wav still on disk.
 
     Requiring both means deleting a clip re-opens that line for recording,
     rather than leaving a green row pointing at a file that no longer exists.
+
+    A row counts for this script when its filename carries this script's slug.
+    Clips recorded before clips were scoped have no slug, and the dataset holds
+    no other record of which script they came from - so their only remaining
+    evidence of provenance is the row's own text, which `texts` supplies as
+    {index: chunk text}. A legacy clip counts only where the text still matches
+    the line it sits on, which keeps the user's existing takes green under the
+    script they were read from and hides them from every sibling script.
     """
     path = Path(csv_path)
     if not path.exists():
@@ -82,10 +143,33 @@ def recorded_indices(csv_path, audio_dir, language):
         for row in csv.DictReader(handle):
             if row["language"] != language:
                 continue
-            match = re.search(rf"{language}_(\d+)\.wav$", row["audio_path"])
-            if match and clip_path(audio_dir, language, int(match.group(1))).exists():
-                found.add(int(match.group(1)))
+            index = _index_for(row, language, script, texts)
+            if index is not None and \
+                    wp.resolve_audio_path(row["audio_path"], audio_dir).exists():
+                found.add(index)
     return found
+
+
+def _index_for(row, language, script, texts):
+    """The chunk this row occupies in the given script, or None if it is not ours."""
+    name = wp.dataset_audio_path(row["audio_path"])
+
+    if script is not None:
+        prefix = f"{re.escape(language)}_{re.escape(script_slug(script))}"
+        scoped = re.fullmatch(rf"{prefix}_(\d+)\.wav", name)
+        if scoped:
+            return int(scoped.group(1))
+
+    legacy = re.fullmatch(rf"{re.escape(language)}_(\d+)\.wav", name)
+    if not legacy:
+        return None
+
+    index = int(legacy.group(1))
+    # No script asked for, or no chunk text to check against: the caller is
+    # working on a single script's dataset the old way, so keep the old answer.
+    if script is None or texts is None:
+        return index
+    return index if texts.get(index) == row["text"] else None
 
 
 def first_unrecorded(total, recorded):

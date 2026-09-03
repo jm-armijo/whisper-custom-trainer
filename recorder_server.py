@@ -273,7 +273,13 @@ def save_chunk(config, name, index, payload):
         )
 
     Path(config.audio_dir).mkdir(parents=True, exist_ok=True)
-    destination = rs.clip_path(config.audio_dir, language, index)
+    # Re-recording overwrites the take on this line whatever it is named, so a
+    # legacy clip is replaced rather than shadowed by a second file the picker
+    # would then have to choose between.
+    destination = rs.existing_clip_path(
+        config.csv_path, config.audio_dir, language, index, name,
+        dict(enumerate(progress["chunks"])),
+    )
     # PCM_16 at wp.SAMPLE_RATE matches record_data.write_clip exactly; a second
     # format in the dataset would surface as a decode surprise inside train.py.
     sf.write(str(destination), samples, wp.SAMPLE_RATE, subtype="PCM_16")
@@ -301,7 +307,10 @@ def delete_chunk(config, name, index):
     _, language, progress = _progress(config, name)
     _check_index(index, progress["total"])
 
-    destination = rs.clip_path(config.audio_dir, language, index)
+    destination = rs.existing_clip_path(
+        config.csv_path, config.audio_dir, language, index, name,
+        dict(enumerate(progress["chunks"])),
+    )
     # missing_ok: the browser may retry a delete, and a second one is a no-op
     # rather than an error - the line is already open either way.
     Path(destination).unlink(missing_ok=True)
@@ -315,7 +324,10 @@ def clip_bytes(config, name, index):
     _, language, progress = _progress(config, name)
     _check_index(index, progress["total"])
 
-    destination = rs.clip_path(config.audio_dir, language, index)
+    destination = rs.existing_clip_path(
+        config.csv_path, config.audio_dir, language, index, name,
+        dict(enumerate(progress["chunks"])),
+    )
     if not Path(destination).exists():
         raise NotFound(f"No recording on line {index + 1} yet.")
     return Path(destination).read_bytes()

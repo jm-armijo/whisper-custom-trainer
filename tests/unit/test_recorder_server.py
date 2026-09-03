@@ -65,13 +65,13 @@ class TestSaveChunk:
 
     def test_writes_the_wav_where_recorder_state_expects_it(self, paths):
         srv.save_chunk(paths, "es/a.txt", 1, wav_bytes(seconds=1.0))
-        assert rs.clip_path(paths.audio_dir, "es", 1).exists()
+        assert rs.clip_path(paths.audio_dir, "es", 1, "es/a.txt").exists()
 
     def test_writes_pcm_16_at_the_pipeline_rate(self, paths):
         """Byte-identical to record_data.write_clip, or train.py sees two formats."""
         srv.save_chunk(paths, "es/a.txt", 0, wav_bytes(seconds=1.0))
 
-        info = sf.info(str(rs.clip_path(paths.audio_dir, "es", 0)))
+        info = sf.info(str(rs.clip_path(paths.audio_dir, "es", 0, "es/a.txt")))
         assert (info.samplerate, info.channels, info.subtype) == (
             wp.SAMPLE_RATE, 1, "PCM_16",
         )
@@ -114,14 +114,14 @@ class TestSaveChunk:
     def test_a_rejected_clip_writes_no_wav(self, paths):
         with pytest.raises(wp.PipelineError):
             srv.save_chunk(paths, "es/a.txt", 0, wav_bytes(seconds=wp.MIN_CLIP_SECONDS / 2))
-        assert not rs.clip_path(paths.audio_dir, "es", 0).exists()
+        assert not rs.clip_path(paths.audio_dir, "es", 0, "es/a.txt").exists()
 
     def test_a_rejected_clip_leaves_an_earlier_take_intact(self, paths):
         srv.save_chunk(paths, "es/a.txt", 0, wav_bytes(seconds=1.0))
         with pytest.raises(wp.PipelineError):
             srv.save_chunk(paths, "es/a.txt", 0, wav_bytes(seconds=wp.MIN_CLIP_SECONDS / 2))
 
-        assert rs.clip_path(paths.audio_dir, "es", 0).exists()
+        assert rs.clip_path(paths.audio_dir, "es", 0, "es/a.txt").exists()
 
     def test_rejects_an_index_outside_the_script(self, paths):
         with pytest.raises(wp.PipelineError, match="index"):
@@ -138,7 +138,7 @@ class TestSaveChunk:
     def test_creates_the_audio_directory_if_it_is_absent(self, paths, tmp_path):
         config = paths._replace(audio_dir=tmp_path / "fresh")
         srv.save_chunk(config, "es/a.txt", 0, wav_bytes(seconds=1.0))
-        assert rs.clip_path(config.audio_dir, "es", 0).exists()
+        assert rs.clip_path(config.audio_dir, "es", 0, "es/a.txt").exists()
 
 
 class TestDeleteChunk:
@@ -146,7 +146,7 @@ class TestDeleteChunk:
         srv.save_chunk(paths, "es/a.txt", 0, wav_bytes(seconds=1.0))
         srv.delete_chunk(paths, "es/a.txt", 0)
 
-        assert rs.recorded_indices(paths.csv_path, paths.audio_dir, "es") == set()
+        assert rs.recorded_indices(paths.csv_path, paths.audio_dir, "es", "es/a.txt") == set()
 
     def test_drops_the_dataset_row_too(self, paths):
         """A row pointing at a missing file is what train.py cannot load."""
@@ -161,7 +161,7 @@ class TestDeleteChunk:
         srv.save_chunk(paths, "es/a.txt", 1, wav_bytes(seconds=1.0))
         srv.delete_chunk(paths, "es/a.txt", 0)
 
-        assert rs.recorded_indices(paths.csv_path, paths.audio_dir, "es") == {1}
+        assert rs.recorded_indices(paths.csv_path, paths.audio_dir, "es", "es/a.txt") == {1}
 
     def test_deleting_an_unrecorded_line_is_not_an_error(self, paths):
         """The browser may retry a delete; a second one must not 500."""
