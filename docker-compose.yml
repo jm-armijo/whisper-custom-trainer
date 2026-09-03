@@ -16,7 +16,21 @@ services:
     # The container-side bind is 0.0.0.0 (see the Dockerfile); binding to
     # 127.0.0.1 there would leave this port answering nothing.
     ports:
-      - "${RECORDER_PORT:-8080}:8080"
+      - "${RECORDER_PORT:-8099}:8099"
+
+    environment:
+      # Both sides of the port mapping must agree: the container-side number is
+      # what the server binds, so leaving this at the image default served
+      # nothing on the published port.
+      RECORDER_PORT: "8099"
+      # Serving TLS is what makes the phone's microphone available at all -
+      # browsers refuse getUserMedia over plain HTTP to a LAN IP. Unset, the
+      # Dockerfile's CMD omits --cert and the recorder falls back to HTTP,
+      # which is the localhost dev loop and not this deployment.
+      #
+      # Only the certificate is named: recorder_server.tls_context derives the
+      # key beside it as "<stem>-key<suffix>".
+      RECORDER_CERT: "/certs/localhost+2.pem"
 
     # The dataset must outlive the container: `docker compose down` and a
     # rebuilt image both destroy the writable layer, and every take recorded
@@ -39,6 +53,10 @@ services:
       # under a file mount the sidecar landed in the container's writable layer
       # and the cross-process lock guarded nothing.
       - ./data:/data/audio
+      # The mkcert pair, read-only: the server only loads it. Kept out of the
+      # image deliberately - a private key baked into a layer travels with
+      # every copy of it, and certs/ is gitignored for the same reason.
+      - ./certs:/certs:ro
 
     # A crashed recorder should come back on its own after a reboot of the box,
     # but a deliberate `compose stop` should stay stopped.
