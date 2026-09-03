@@ -163,6 +163,13 @@ export function clampToViewport({ anchor, box, viewport, gap = 8 }) {
   return { top, left };
 }
 
+export function centreInViewport({ box, viewport }) {
+  return {
+    top: Math.max((viewport.height - box.height) / 2, 0),
+    left: Math.max((viewport.width - box.width) / 2, 0),
+  };
+}
+
 /** Session state for one open script. Holds no DOM and performs no I/O. */
 export class ScriptSession {
   constructor({ name, language, chunks, recorded }) {

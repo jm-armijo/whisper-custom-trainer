@@ -9,6 +9,7 @@ import {
   PLAYING,
   RECORDING,
   blinkGlyph,
+  centreInViewport,
   clampToViewport,
   elapsedLabel,
   isBusy,
@@ -383,11 +384,11 @@ export function confirmNearChunk(dom, { index, question, confirmLabel, cancelLab
   }
   return new Promise((resolve) => {
     const dialog = buildDialog({ question, confirmLabel, cancelLabel });
-    openDialog = dialog.root;
     document.body.appendChild(dialog.root);
-    // Positioned after it is in the document: an unattached node measures zero
-    // in every browser, which would clamp every dialog to the top-left corner.
+    // After attaching: an unattached node measures zero.
     positionNearChunk(dom, dialog.root, index);
+    // Last: claimed earlier, a throw above wedges the guard shut for good.
+    openDialog = dialog.root;
 
     const answer = (verdict) => {
       dialog.root.remove();
@@ -396,13 +397,16 @@ export function confirmNearChunk(dom, { index, question, confirmLabel, cancelLab
     };
     dialog.confirm.addEventListener("click", () => answer(true));
     dialog.cancel.addEventListener("click", () => answer(false));
+
+    const aButtonWillAnswerForItself = (event) =>
+      event.target === dialog.confirm || event.target === dialog.cancel;
+
     dialog.root.addEventListener("keydown", (event) => {
-      // Escape only ever cancels. Folding it into one handler with Enter is
-      // how a key pressed to back out ends up deleting the take.
+      // Escape only ever cancels, never deletes.
       if (event.key === "Escape") {
         event.preventDefault();
         answer(false);
-      } else if (event.key === "Enter") {
+      } else if (event.key === "Enter" && !aButtonWillAnswerForItself(event)) {
         event.preventDefault();
         answer(true);
       }
@@ -461,17 +465,17 @@ function buildDialog({ question, confirmLabel, cancelLabel }) {
  * absolutely-positioned box would drift off with the row it was measured
  * against while the question was still being read. */
 function positionNearChunk(dom, root, index) {
-  const row = dom.chunks.querySelector(`#chunk-${index}`);
-  if (!row) {
-    return;
-  }
-  const anchor = row.getBoundingClientRect();
-  const box = root.getBoundingClientRect();
-  const { top, left } = clampToViewport({
-    anchor,
-    box: { width: box.width, height: box.height },
-    viewport: { width: window.innerWidth, height: window.innerHeight },
-  });
+  const anchorRow = dom.chunks.querySelector(`#chunk-${index}`);
+  const box = measure(root);
+  const viewport = { width: window.innerWidth, height: window.innerHeight };
+  const { top, left } = anchorRow
+    ? clampToViewport({ anchor: anchorRow.getBoundingClientRect(), box, viewport })
+    : centreInViewport({ box, viewport });
   root.style.top = `${top}px`;
   root.style.left = `${left}px`;
+}
+
+function measure(element) {
+  const box = element.getBoundingClientRect();
+  return { width: box.width, height: box.height };
 }
