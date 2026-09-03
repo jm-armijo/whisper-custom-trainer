@@ -278,9 +278,18 @@ globalThis.__dialogButton = (action) => {
   if (dialog) walk(dialog);
   return found[0] || null;
 };
-globalThis.__press = (key) => {
+// `target` defaults to the dialog itself, which is where a key pressed with
+// nothing focused lands. Passing a button models the real event path instead:
+// keydown fires on the focused button first and bubbles to the dialog, so a
+// handler that cannot tell the two apart answers for a button it never saw.
+globalThis.__press = (key, target) => {
   const dialog = globalThis.__dialog();
-  dialog?.handlers.keydown?.({ key, preventDefault: () => {}, stopPropagation: () => {} });
+  dialog?.handlers.keydown?.({
+    key,
+    target: target ?? dialog,
+    preventDefault: () => {},
+    stopPropagation: () => {},
+  });
 };
 globalThis.__record = record;
 globalThis.__tracks = tracks;
@@ -1598,6 +1607,31 @@ class TestRecordAbsorbedTheRedoButton:
         """, live_server)
         assert result["during"] == "RECORDING", "Enter did not confirm"
 
+    def test_enter_on_the_focused_cancel_button_keeps_the_take(self, live_server):
+        """Focus lands on Cancel precisely so a reflexive Enter is safe.
+
+        The keydown listener sits on the dialog, and Enter bubbles to it from
+        the button, so the dialog answered `true` for a press that visibly
+        landed on "Keep" - and its preventDefault cancelled the synthetic click
+        that would have answered `false`. A keyboard user who read the button
+        under the cursor and pressed Enter deleted the take.
+        """
+        result = drive_app(self.RECORD_ONE + """
+        tapRecord();
+        await __settle();
+        __press("Enter", __dialogButton("cancel"));
+        await __settle();
+        // Only the dialog's own listener is dispatched here: the stub does not
+        // synthesise the click a real Enter raises on a focused button, which
+        // is what closes the dialog in a browser. What this can prove is the
+        // half that mattered - the dialog did not answer `true` behind the
+        // button's back, so no take was deleted.
+        console.log(JSON.stringify({
+          state: button("status-state").textContent,
+        }));
+        """, live_server)
+        assert result["state"] != "RECORDING", "Enter on Keep deleted the take"
+
     def test_the_dialog_takes_focus_so_a_keyboard_user_is_not_stranded(
         self, live_server
     ):
@@ -1654,6 +1688,39 @@ class TestRecordAbsorbedTheRedoButton:
         """, live_server)
         assert result["dialogs"] == 1, "a second tap stacked another dialog"
         assert result["opens"] == 1, "a second tap started a take behind the dialog"
+
+    def test_tapping_another_line_while_the_dialog_is_open_moves_no_take(
+        self, live_server
+    ):
+        """The dialog does not block the page, so the rows behind it stay live.
+
+        record() captures the index before it asks, but deleted that index while
+        recording into whatever the cursor had since become: a tap on line 3
+        during the question threw line 1's take away and put the new one on
+        line 3. window.confirm made this impossible by freezing the page; an
+        in-page dialog has to refuse the move itself.
+        """
+        result = drive_app(self.RECORD_ONE + """
+        tapRecord();
+        await __settle();
+        line(2).handlers.click();
+        await __settle();
+        __dialogButton("confirm").handlers.click();
+        await __settle();
+        await button("btn-stop").handlers.click();
+        await __settle();
+        await __settle();
+        // The recorded class is what the page shows about each line, so this
+        // asks the screen rather than the session behind it.
+        const isRecorded = (index) =>
+          (line(index).className || "").includes("recorded");
+        console.log(JSON.stringify({
+          first: isRecorded(0),
+          third: isRecorded(2),
+        }));
+        """, live_server)
+        assert result["first"] is True, "line 1's take was deleted for a line nobody confirmed"
+        assert result["third"] is False, "the new take landed on the line tapped mid-dialog"
 
     def test_a_fresh_line_records_without_asking(self, live_server):
         """The confirm belongs to the delete, not to the key: an unrecorded
@@ -1760,6 +1827,41 @@ class TestTheConfirmationIsClampedIntoTheViewport:
             box={"width": 600, "height": 120}, viewport=self.VIEWPORT, gap=8,
         )
         assert placed["left"] == 0, placed
+
+
+class TestTheConfirmationIsPlacedEvenWithNoLineToAnchorTo:
+    """centreInViewport is the fallback half of the same arithmetic, and lives
+    beside clampToViewport for the same reason.
+
+    render.js positions the dialog against the row it is asking about. Every
+    caller today passes the cursor's row, which is always drawn - but a dialog
+    that skipped positioning kept `position: fixed` with no top or left, which
+    does not mean "centred": it means the box falls to where it would have sat
+    in the flow, below the whole script and off the bottom of a phone. The
+    question would be unanswerable rather than merely misplaced."""
+
+    CALL = """
+    import {{ centreInViewport }} from "./state.js";
+    console.log(JSON.stringify(centreInViewport({args})));
+    """
+
+    VIEWPORT = types.MappingProxyType({"width": 400, "height": 800})
+    BOX = types.MappingProxyType({"width": 260, "height": 120})
+
+    def centre(self, **args):
+        return run_node(self.CALL.format(args=json.dumps(args, default=dict)))
+
+    def test_it_centres_the_box_in_the_viewport(self):
+        placed = self.centre(box=self.BOX, viewport=self.VIEWPORT)
+        assert placed == {"top": 340, "left": 70}, placed
+
+    def test_a_box_larger_than_the_viewport_is_pinned_to_the_top_left(self):
+        """Same rule as the clamp: centring a box bigger than the screen puts
+        its top edge off it, and the half you cannot reach holds the buttons."""
+        placed = self.centre(
+            box={"width": 600, "height": 900}, viewport=self.VIEWPORT,
+        )
+        assert placed == {"top": 0, "left": 0}, placed
 
 
 class TestALineIsChosenByTappingIt:

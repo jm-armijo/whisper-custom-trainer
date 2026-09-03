@@ -150,7 +150,7 @@ async function refreshScripts() {
 }
 
 async function openScript(name) {
-  if (isBusy(app.state)) {
+  if (isIgnoringInput()) {
     return;
   }
   await guard(async () => {
@@ -166,7 +166,7 @@ async function openScript(name) {
 }
 
 function selectChunk(index) {
-  if (isBusy(app.state) || !app.session) {
+  if (isIgnoringInput() || !app.session) {
     return;
   }
   app.session.select(index);
@@ -187,14 +187,18 @@ function selectChunk(index) {
  *
  * That confirmation is now awaited rather than read. window.confirm blocked
  * the page while it asked; an in-page dialog does not, so between the question
- * and its answer this key is still live under the thumb - hence `asking`,
- * which is what stops a second tap starting a take behind the open dialog.
+ * and its answer this key is still live under the thumb.
  * The markup and the pixels belong to render.js; this only asks and waits.
  */
-let asking = false;
+let aQuestionIsOpen = false;
+
+// An open question counts as busy: the state is IDLE and the rows stay live.
+function isIgnoringInput() {
+  return isBusy(app.state) || aQuestionIsOpen;
+}
 
 async function record() {
-  if (isBusy(app.state) || asking || !app.session) {
+  if (isIgnoringInput() || !app.session) {
     return;
   }
   const index = app.session.cursor;
@@ -202,7 +206,7 @@ async function record() {
     await startRecording();
     return;
   }
-  asking = true;
+  aQuestionIsOpen = true;
   let confirmed = false;
   try {
     confirmed = await render.confirmNearChunk(dom, {
@@ -212,7 +216,7 @@ async function record() {
       cancelLabel: "Keep",
     });
   } finally {
-    asking = false;
+    aQuestionIsOpen = false;
   }
   if (!confirmed) {
     say("kept the existing take");
